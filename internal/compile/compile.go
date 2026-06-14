@@ -1,0 +1,195 @@
+// Package compile lowers a syntax AST into the flat instruction program that
+// the backtracking VM executes.
+package compile
+
+import (
+	"github.com/go-onigmo/regexp/internal/ast"
+	"github.com/go-onigmo/regexp/internal/syntax"
+)
+
+// Op is the opcode of a VM instruction.
+type Op int
+
+const (
+	// OpChar matches the single byte B and advances.
+	OpChar Op = iota
+	// OpAny matches any byte except '\n' and advances.
+	OpAny
+	// OpClass matches a byte in (or, if Negate, not in) Ranges and advances.
+	OpClass
+	// OpSplit forks: try X first, then Y on backtrack (greedy ordering).
+	OpSplit
+	// OpJmp jumps to X.
+	OpJmp
+	// OpSave records the current position into capture slot Slot.
+	OpSave
+	// OpAssertBeginText asserts the start of the input (\A).
+	OpAssertBeginText
+	// OpAssertEndText asserts the end of the input (\z).
+	OpAssertEndText
+	// OpAssertEndTextOptNL asserts end of input, allowing one trailing '\n' (\Z).
+	OpAssertEndTextOptNL
+	// OpAssertBeginLine asserts the start of a line (^).
+	OpAssertBeginLine
+	// OpAssertEndLine asserts the end of a line ($).
+	OpAssertEndLine
+	// OpMatch reports a successful match.
+	OpMatch
+)
+
+// Inst is a single VM instruction. Only the fields relevant to its Op are used.
+type Inst struct {
+	Op     Op
+	B      byte             // OpChar
+	X, Y   int              // OpSplit, OpJmp
+	Slot   int              // OpSave
+	Ranges []ast.ClassRange // OpClass
+	Negate bool             // OpClass
+}
+
+// Program is a compiled regular expression: the instruction list plus the
+// number of capture groups (group 0 being the whole match).
+type Program struct {
+	Insts      []Inst
+	NumCapture int
+}
+
+// NumSlots returns the number of save slots the VM must allocate (two per
+// capture group, including group 0).
+func (p *Program) NumSlots() int {
+	return 2 * (p.NumCapture + 1)
+}
+
+// builder accumulates instructions during compilation.
+type builder struct {
+	insts []Inst
+}
+
+func (b *builder) emit(in Inst) int {
+	b.insts = append(b.insts, in)
+	return len(b.insts) - 1
+}
+
+// Compile turns a parse result into an executable program. It wraps the whole
+// pattern in save slots 0/1 (the overall match span) and terminates with
+// OpMatch.
+func Compile(r syntax.Result) *Program {
+	b := &builder{}
+	b.emit(Inst{Op: OpSave, Slot: 0})
+	b.node(r.Root)
+	b.emit(Inst{Op: OpSave, Slot: 1})
+	b.emit(Inst{Op: OpMatch})
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture}
+}
+
+// node compiles one AST node, appending its instructions.
+func (b *builder) node(n ast.Node) {
+	switch t := n.(type) {
+	case *ast.Empty:
+		// Nothing to emit.
+	case *ast.Literal:
+		b.emit(Inst{Op: OpChar, B: t.B})
+	case *ast.AnyChar:
+		b.emit(Inst{Op: OpAny})
+	case *ast.Class:
+		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Negate: t.Negate})
+	case *ast.Anchor:
+		b.anchor(t)
+	case *ast.Concat:
+		for _, s := range t.Subs {
+			b.node(s)
+		}
+	case *ast.Alternate:
+		b.alternate(t)
+	case *ast.Group:
+		b.group(t)
+	case *ast.Star:
+		b.repeat(t)
+	}
+}
+
+func (b *builder) anchor(a *ast.Anchor) {
+	switch a.Kind {
+	case ast.AnchorBeginText:
+		b.emit(Inst{Op: OpAssertBeginText})
+	case ast.AnchorEndText:
+		b.emit(Inst{Op: OpAssertEndText})
+	case ast.AnchorEndTextOptNL:
+		b.emit(Inst{Op: OpAssertEndTextOptNL})
+	case ast.AnchorBeginLine:
+		b.emit(Inst{Op: OpAssertBeginLine})
+	case ast.AnchorEndLine:
+		b.emit(Inst{Op: OpAssertEndLine})
+	}
+}
+
+func (b *builder) group(g *ast.Group) {
+	if g.Capture {
+		b.emit(Inst{Op: OpSave, Slot: 2 * g.Index})
+		b.node(g.Sub)
+		b.emit(Inst{Op: OpSave, Slot: 2*g.Index + 1})
+		return
+	}
+	b.node(g.Sub)
+}
+
+// alternate compiles a|b|c as a chain of splits, preferring earlier
+// alternatives (leftmost-first).
+func (b *builder) alternate(a *ast.Alternate) {
+	var jmps []int
+	for i, sub := range a.Subs {
+		last := i == len(a.Subs)-1
+		var split int
+		if !last {
+			split = b.emit(Inst{Op: OpSplit})
+		}
+		start := len(b.insts)
+		b.node(sub)
+		if !last {
+			b.insts[split].X = start
+			jmps = append(jmps, b.emit(Inst{Op: OpJmp}))
+			b.insts[split].Y = len(b.insts)
+		}
+	}
+	end := len(b.insts)
+	for _, j := range jmps {
+		b.insts[j].X = end
+	}
+}
+
+// repeat compiles a quantifier {min,max} greedily. It unrolls the required
+// minimum, then emits the optional part as a loop (max == -1) or a chain of
+// optional copies (bounded max).
+func (b *builder) repeat(s *ast.Star) {
+	// Required copies.
+	for i := 0; i < s.Min; i++ {
+		b.node(s.Sub)
+	}
+	switch {
+	case s.Max == -1:
+		b.starLoop(s.Sub)
+	default:
+		// Optional copies: max-min nested optional groups.
+		var splits []int
+		for i := 0; i < s.Max-s.Min; i++ {
+			split := b.emit(Inst{Op: OpSplit})
+			splits = append(splits, split)
+			b.insts[split].X = len(b.insts)
+			b.node(s.Sub)
+		}
+		end := len(b.insts)
+		for _, sp := range splits {
+			b.insts[sp].Y = end
+		}
+	}
+}
+
+// starLoop emits a greedy unbounded loop over sub: split (prefer body), body,
+// jmp back to split.
+func (b *builder) starLoop(sub ast.Node) {
+	split := b.emit(Inst{Op: OpSplit})
+	b.insts[split].X = len(b.insts)
+	b.node(sub)
+	b.emit(Inst{Op: OpJmp, X: split})
+	b.insts[split].Y = len(b.insts)
+}

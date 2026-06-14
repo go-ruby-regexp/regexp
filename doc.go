@@ -7,6 +7,11 @@
 // with Ruby's leftmost-first match semantics, hardened against catastrophic
 // backtracking (ReDoS) by memoization and a deterministic time/step budget.
 //
-// The package is in the planning stage; see docs/plan-regexp.md for the
-// architecture and roadmap.
+// Phase 0 is implemented: a greedy backtracking VM with leftmost-first match
+// semantics covering literals and escapes, the dot metacharacter, character
+// classes (ranges, negation, and the \d \D \w \W \s \S escapes), the anchors
+// \A \z \Z ^ $, the greedy quantifiers * + ? {m} {m,} {m,n}, capturing and
+// non-capturing groups, and alternation. Backreferences, named groups,
+// lookaround, Unicode properties, and case-folding arrive in later phases; see
+// docs/plan-regexp.md for the full roadmap.
 package onigmo
