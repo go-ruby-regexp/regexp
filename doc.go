@@ -11,7 +11,8 @@
 // semantics covering literals and escapes, the dot metacharacter, character
 // classes (ranges, negation, and the \d \D \w \W \s \S escapes), the anchors
 // \A \z \Z ^ $, the greedy quantifiers * + ? {m} {m,} {m,n}, capturing and
-// non-capturing groups, and alternation. Backreferences, named groups,
-// lookaround, Unicode properties, and case-folding arrive in later phases; see
-// docs/plan-regexp.md for the full roadmap.
+// non-capturing groups, and alternation. Phase 1 adds named groups
+// (?<name>...) and backreferences (\1..\9 and \k<name>). Lookaround, Unicode
+// properties, and case-folding arrive in later phases; see docs/plan-regexp.md
+// for the full roadmap.
 package onigmo

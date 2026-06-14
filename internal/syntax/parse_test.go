@@ -270,25 +270,37 @@ func TestNegateRangesFullByte(t *testing.T) {
 
 func TestParseErrors(t *testing.T) {
 	for _, pat := range []string{
-		`(`,       // missing closing )
-		`)`,       // unexpected )
-		`(?<x>a)`, // unsupported group syntax
-		`(?`,      // unsupported group syntax at EOF
-		`*`,       // nothing to repeat
-		`+`,       // nothing to repeat
-		`?`,       // nothing to repeat
-		`\`,       // trailing backslash
-		`\q`,      // unsupported escape
-		`[`,       // missing closing ]
-		`[a`,      // missing closing ]
-		`[a-`,     // missing closing ] (dash at very end with no close)
-		`[\`,      // trailing backslash in class
-		`[\q]`,    // unsupported escape in class
-		`[z-a]`,   // invalid range
-		`[a-\d]`,  // invalid range end (class escape as range hi)
-		`a|*`,     // error in alternation branch after |
-		`(*)`,     // error inside a group's alternation
-		`[a-\q]`,  // unsupported escape as range hi
+		`(`,              // missing closing )
+		`)`,              // unexpected )
+		`(?`,             // unsupported group syntax at EOF
+		`(?<=a)`,         // lookbehind not supported (Phase 1)
+		`(?<!a)`,         // negative lookbehind not supported (Phase 1)
+		`(?<a)`,          // missing > in group name
+		`(?<>a)`,         // empty group name
+		`(?<a b>x)`,      // invalid character in group name
+		`(?<ab`,          // group name runs to EOF without '>'
+		`(?<a>x)(?<a>y)`, // duplicate group name
+		`\1`,             // backreference to a non-existent group
+		`(a)\2`,          // backreference index exceeds group count
+		`\12`,            // multi-digit backreference exceeds group count
+		`\k<none>`,       // undefined group name
+		`\k<ab`,          // \k name runs to EOF without '>'
+		`\k`,             // \k without a name
+		`*`,              // nothing to repeat
+		`+`,              // nothing to repeat
+		`?`,              // nothing to repeat
+		`\`,              // trailing backslash
+		`\q`,             // unsupported escape
+		`[`,              // missing closing ]
+		`[a`,             // missing closing ]
+		`[a-`,            // missing closing ] (dash at very end with no close)
+		`[\`,             // trailing backslash in class
+		`[\q]`,           // unsupported escape in class
+		`[z-a]`,          // invalid range
+		`[a-\d]`,         // invalid range end (class escape as range hi)
+		`a|*`,            // error in alternation branch after |
+		`(*)`,            // error inside a group's alternation
+		`[a-\q]`,         // unsupported escape as range hi
 	} {
 		if _, err := Parse(pat); !errors.Is(err, ErrSyntax) {
 			t.Errorf("Parse(%q): expected ErrSyntax, got %v", pat, err)

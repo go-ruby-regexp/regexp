@@ -33,6 +33,8 @@ const (
 	OpAssertBeginLine
 	// OpAssertEndLine asserts the end of a line ($).
 	OpAssertEndLine
+	// OpBackref matches the text previously captured by group Slot.
+	OpBackref
 	// OpMatch reports a successful match.
 	OpMatch
 )
@@ -47,11 +49,12 @@ type Inst struct {
 	Negate bool             // OpClass
 }
 
-// Program is a compiled regular expression: the instruction list plus the
-// number of capture groups (group 0 being the whole match).
+// Program is a compiled regular expression: the instruction list, the number of
+// capture groups (group 0 being the whole match), and the named-group map.
 type Program struct {
 	Insts      []Inst
 	NumCapture int
+	Names      map[string]int
 }
 
 // NumSlots returns the number of save slots the VM must allocate (two per
@@ -79,7 +82,7 @@ func Compile(r syntax.Result) *Program {
 	b.node(r.Root)
 	b.emit(Inst{Op: OpSave, Slot: 1})
 	b.emit(Inst{Op: OpMatch})
-	return &Program{Insts: b.insts, NumCapture: r.NumCapture}
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names}
 }
 
 // node compiles one AST node, appending its instructions.
@@ -103,6 +106,8 @@ func (b *builder) node(n ast.Node) {
 		b.alternate(t)
 	case *ast.Group:
 		b.group(t)
+	case *ast.Backref:
+		b.emit(Inst{Op: OpBackref, Slot: t.Index})
 	case *ast.Star:
 		b.repeat(t)
 	}

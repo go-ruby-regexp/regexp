@@ -39,7 +39,7 @@ func (re *Regexp) Match(s string) *MatchData {
 	if err != nil || !ok {
 		return nil
 	}
-	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture}
+	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
 }
 
 // MatchString reports whether s contains a match of the regular expression.
@@ -53,11 +53,27 @@ type MatchData struct {
 	input   string
 	caps    []int
 	ngroups int
+	names   map[string]int
 }
 
 // NGroups returns the number of capturing groups, not counting group 0 (the
 // whole match).
 func (m *MatchData) NGroups() int { return m.ngroups }
+
+// IndexOfName returns the 1-based group index for a named capture, or -1 if no
+// group has that name.
+func (m *MatchData) IndexOfName(name string) int {
+	if i, ok := m.names[name]; ok {
+		return i
+	}
+	return -1
+}
+
+// StrName returns the substring captured by the named group, or "" if there is
+// no such name or the group did not participate.
+func (m *MatchData) StrName(name string) string {
+	return m.Str(m.IndexOfName(name))
+}
 
 // Begin returns the byte offset of the start of group i, or -1 if the group did
 // not participate in the match. Group 0 is the whole match. An out-of-range

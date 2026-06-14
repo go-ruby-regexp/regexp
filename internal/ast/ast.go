@@ -74,11 +74,19 @@ type Star struct {
 }
 
 // Group is a parenthesised sub-expression. When Capture is true it records its
-// span into the capture slot identified by Index (1-based).
+// span into the capture slot identified by Index (1-based). Name is set for a
+// named capture (?<name>...), otherwise empty.
 type Group struct {
 	Sub     Node
 	Capture bool
 	Index   int
+	Name    string
+}
+
+// Backref matches the same text previously captured by group Index
+// (\1..\9, or \k<name>).
+type Backref struct {
+	Index int
 }
 
 // Empty matches the empty string.
@@ -92,4 +100,5 @@ func (*Concat) isNode()    {}
 func (*Alternate) isNode() {}
 func (*Star) isNode()      {}
 func (*Group) isNode()     {}
+func (*Backref) isNode()   {}
 func (*Empty) isNode()     {}

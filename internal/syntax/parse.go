@@ -19,24 +19,27 @@ import (
 // failures wrap it so callers can test with errors.Is.
 var ErrSyntax = errors.New("syntax error")
 
-// Result is the outcome of parsing a pattern: the AST root and the number of
-// capturing groups it contains.
+// Result is the outcome of parsing a pattern: the AST root, the number of
+// capturing groups, and the name→index map for named captures.
 type Result struct {
 	Root       ast.Node
 	NumCapture int
+	Names      map[string]int
 }
 
 // parser is a single-use recursive-descent parser over the pattern bytes.
 type parser struct {
-	src  string
-	pos  int
-	ncap int
+	src        string
+	pos        int
+	ncap       int
+	names      map[string]int
+	maxBackref int // largest numeric backreference seen, validated after parsing
 }
 
 // Parse compiles a pattern string into an AST. It returns an error wrapping
 // ErrSyntax when the pattern is malformed.
 func Parse(pattern string) (Result, error) {
-	p := &parser{src: pattern}
+	p := &parser{src: pattern, names: map[string]int{}}
 	node, err := p.parseAlternate()
 	if err != nil {
 		return Result{}, err
@@ -46,7 +49,10 @@ func Parse(pattern string) (Result, error) {
 		// rest is a stray ')'.
 		return Result{}, p.errorf("unexpected %q", p.src[p.pos])
 	}
-	return Result{Root: node, NumCapture: p.ncap}, nil
+	if p.maxBackref > p.ncap {
+		return Result{}, p.errorf("invalid backreference \\%d", p.maxBackref)
+	}
+	return Result{Root: node, NumCapture: p.ncap, Names: p.names}, nil
 }
 
 func (p *parser) errorf(format string, args ...any) error {
@@ -214,22 +220,38 @@ func (p *parser) parseAtom() (ast.Node, error) {
 	}
 }
 
-// parseGroup parses a capturing group (...) or a non-capturing group (?:...).
+// parseGroup parses a capturing group (...), a non-capturing group (?:...), or
+// a named capturing group (?<name>...).
 func (p *parser) parseGroup() (ast.Node, error) {
 	p.next() // consume '('
 	capture := true
+	name := ""
 	if !p.eof() && p.peek() == '?' {
 		p.next()
-		if p.eof() || p.peek() != ':' {
+		switch {
+		case !p.eof() && p.peek() == ':':
+			p.next() // consume ':'
+			capture = false
+		case !p.eof() && p.peek() == '<' && p.pos+1 < len(p.src) && p.src[p.pos+1] != '=' && p.src[p.pos+1] != '!':
+			n, err := p.parseGroupName()
+			if err != nil {
+				return nil, err
+			}
+			name = n
+		default:
 			return nil, p.errorf("unsupported group syntax")
 		}
-		p.next() // consume ':'
-		capture = false
 	}
 	var index int
 	if capture {
 		p.ncap++
 		index = p.ncap
+		if name != "" {
+			if _, dup := p.names[name]; dup {
+				return nil, p.errorf("duplicate group name <%s>", name)
+			}
+			p.names[name] = index
+		}
 	}
 	sub, err := p.parseAlternate()
 	if err != nil {
@@ -239,7 +261,30 @@ func (p *parser) parseGroup() (ast.Node, error) {
 		return nil, p.errorf("missing closing )")
 	}
 	p.next() // consume ')'
-	return &ast.Group{Sub: sub, Capture: capture, Index: index}, nil
+	return &ast.Group{Sub: sub, Capture: capture, Index: index, Name: name}, nil
+}
+
+// parseGroupName reads a <name> after (?, returning the name (without angle
+// brackets). The opening '<' is at the cursor.
+func (p *parser) parseGroupName() (string, error) {
+	p.next() // consume '<'
+	start := p.pos
+	for !p.eof() && p.peek() != '>' {
+		c := p.peek()
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return "", p.errorf("invalid character %q in group name", c)
+		}
+		p.next()
+	}
+	if p.eof() {
+		return "", p.errorf("missing > in group name")
+	}
+	if p.pos == start {
+		return "", p.errorf("empty group name")
+	}
+	name := p.src[start:p.pos]
+	p.next() // consume '>'
+	return name, nil
 }
 
 // parseEscape parses a backslash escape outside a character class.
@@ -264,11 +309,39 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Literal{B: '\t'}, nil
 	case 'r':
 		return &ast.Literal{B: '\r'}, nil
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		idx := int(b - '0')
+		for !p.eof() && p.peek() >= '0' && p.peek() <= '9' {
+			idx = idx*10 + int(p.next()-'0')
+		}
+		if idx > p.maxBackref {
+			p.maxBackref = idx
+		}
+		return &ast.Backref{Index: idx}, nil
+	case 'k':
+		return p.parseNamedBackref()
 	case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
 		return &ast.Literal{B: b}, nil
 	default:
 		return nil, p.errorf("unsupported escape \\%c", b)
 	}
+}
+
+// parseNamedBackref parses \k<name>, resolving to the (already-defined) group
+// index. The cursor is just past the 'k'.
+func (p *parser) parseNamedBackref() (ast.Node, error) {
+	if p.eof() || p.peek() != '<' {
+		return nil, p.errorf("expected <name> after \\k")
+	}
+	name, err := p.parseGroupName()
+	if err != nil {
+		return nil, err
+	}
+	idx, ok := p.names[name]
+	if !ok {
+		return nil, p.errorf("undefined group name <%s>", name)
+	}
+	return &ast.Backref{Index: idx}, nil
 }
 
 // perlClass builds the Class node for one of the Perl class escapes \d \D \w \W

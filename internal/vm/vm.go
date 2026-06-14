@@ -144,6 +144,22 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				pc++
 				continue
 			}
+		case compile.OpBackref:
+			bgn, end := caps[2*in.Slot], caps[2*in.Slot+1]
+			if bgn < 0 || end < 0 {
+				// A group that did not participate matches the empty string.
+				pc++
+				continue
+			}
+			ref := m.input[bgn:end]
+			if sp+len(ref) <= len(m.input) && m.input[sp:sp+len(ref)] == ref {
+				pc++
+				sp += len(ref)
+				if len(ref) > 0 {
+					clear(m.visited)
+				}
+				continue
+			}
 		case compile.OpMatch:
 			return caps, true, nil
 		}
