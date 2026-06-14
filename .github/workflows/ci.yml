@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Track the latest stable Go (org convention). go.mod floor is 1.26.4.
+# The engine is in planning; this builds/vets/tests across OSes. A 100%
+# coverage gate (and the six-arch matrix) lands with the first real code.
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go version
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...

@@ -1,5 +1,6 @@
 # regexp — go-onigmo
 
+[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-onigmo.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
 [![Status](https://img.shields.io/badge/status-planning-9a6700)](docs/plan-regexp.md)
