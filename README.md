@@ -1,9 +1,11 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-onigmo/brand/main/social/go-onigmo-regexp.png" alt="go-onigmo/regexp" width="720"></p>
+
 # regexp — go-onigmo
 
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-onigmo.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
-[![Status](https://img.shields.io/badge/status-planning-9a6700)](docs/plan-regexp.md)
+[![Phase](https://img.shields.io/badge/phase-0%2B1%20done-1a7f37)](docs/plan-regexp.md)
 
 **A pure-Go (no cgo) reimplementation of [Onigmo](https://github.com/k-takata/Onigmo)**,
 the regular-expression engine used by Ruby — a faithful **backtracking VM** with
@@ -15,9 +17,14 @@ It is the regexp backend for
 [go-embedded-ruby](https://github.com/go-embedded-ruby/ruby), but is a
 **standalone, reusable** module with no dependency on the Ruby runtime.
 
-> ⚠️ **Status: planning.** See **[docs/plan-regexp.md](docs/plan-regexp.md)** for
-> the architecture, ReDoS strategy (memoization + timeout, as Ruby ≥3.2), and the
-> phased roadmap.
+> **Status: Phases 0 and 1 implemented** — a greedy backtracking VM with
+> leftmost-first semantics covering literals/escapes, `.`, character classes,
+> anchors (`\A \z \Z ^ $`), greedy quantifiers (`* + ? {m,n}`), capturing and
+> non-capturing groups, alternation, **named groups `(?<name>…)` and
+> backreferences `\1` / `\k<name>`** — differential-tested against MRI, 100%
+> coverage, CI green across 6 arches. Lookaround, Unicode `\p{}`, case-folding
+> and ReDoS memoization are next. See **[docs/plan-regexp.md](docs/plan-regexp.md)**
+> for the architecture and roadmap.
 
 ## Why not the standard library?
 
