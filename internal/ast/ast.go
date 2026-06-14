@@ -48,6 +48,9 @@ const (
 	// AnchorEndLine matches at the end of the input or just before a newline
 	// ($).
 	AnchorEndLine
+	// AnchorPrevMatch matches only at the position where the previous match or
+	// the scan start began (\G).
+	AnchorPrevMatch
 )
 
 // Anchor is a zero-width assertion.
@@ -89,6 +92,18 @@ type Backref struct {
 	Index int
 }
 
+// Look is a zero-width lookaround assertion. Behind selects lookbehind over
+// lookahead, and Negate selects the negative form. Sub is the sub-pattern run
+// at (lookahead) or ending at (lookbehind) the current position; the outer
+// position is never advanced. For lookbehind, Min and Max bound the number of
+// bytes Sub can match (the parser rejects unbounded-width lookbehind).
+type Look struct {
+	Sub      Node
+	Behind   bool
+	Negate   bool
+	Min, Max int
+}
+
 // Empty matches the empty string.
 type Empty struct{}
 
@@ -101,4 +116,5 @@ func (*Alternate) isNode() {}
 func (*Star) isNode()      {}
 func (*Group) isNode()     {}
 func (*Backref) isNode()   {}
+func (*Look) isNode()      {}
 func (*Empty) isNode()     {}

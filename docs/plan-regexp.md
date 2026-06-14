@@ -90,7 +90,23 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   MRI on a starter corpus.
 - **Phase 1** — named groups, non-greedy/possessive quantifiers, atomic groups,
   backreferences.
-- **Phase 2** — lookahead/lookbehind, `\G`, subexpression calls `\g<…>`.
+- **Phase 2** ✅ *done (except `\g<…>`)* — lookahead `(?=…)`/`(?!…)`,
+  lookbehind `(?<=…)`/`(?<!…)`, and the `\G` anchor. Subexpression calls
+  `\g<…>` remain deferred (tracked under a later phase).
+
+  **Lookbehind limitation.** Matching Onigmo/Ruby, each *alternative* of a
+  lookbehind body must have a **constant byte width**; different alternatives may
+  differ (`(?<=ab|c)` is fine). Bodies whose width can vary — unbounded or
+  `{m,n}` (m ≠ n) quantifiers, and backreferences — are rejected at parse time
+  with a "variable-width lookbehind is not supported" syntax error, exactly as
+  Ruby does. The VM evaluates a fixed/bounded-width lookbehind by trying each
+  candidate start position `sp − w` (widest first, for greedy preference) and
+  requiring the sub-pattern to consume exactly up to the current position.
+
+  `\G` pins a match to the position where the overall scan began; for a single
+  `Match` call that is offset 0 (so it behaves like `\A`). Iterative scanning
+  (`scan`/`gsub`), which will advance the `\G` anchor on each step, arrives with
+  the replacement/scan API in a later phase.
 - **Phase 3** — Unicode properties `\p{…}`, POSIX classes, case-folding,
   multi-encoding.
 - **Phase 4** — ReDoS hardening (memoization + timeout/budget), optimizer

@@ -12,7 +12,11 @@
 // classes (ranges, negation, and the \d \D \w \W \s \S escapes), the anchors
 // \A \z \Z ^ $, the greedy quantifiers * + ? {m} {m,} {m,n}, capturing and
 // non-capturing groups, and alternation. Phase 1 adds named groups
-// (?<name>...) and backreferences (\1..\9 and \k<name>). Lookaround, Unicode
-// properties, and case-folding arrive in later phases; see docs/plan-regexp.md
-// for the full roadmap.
+// (?<name>...) and backreferences (\1..\9 and \k<name>). Phase 2 adds the
+// lookaround assertions — positive and negative lookahead (?=...) (?!...) and
+// lookbehind (?<=...) (?<!...) — and the \G anchor (which pins a match to the
+// scan start). Lookbehind bodies must be of constant width per alternative, as
+// in Onigmo/Ruby; variable-width lookbehind is rejected. Unicode properties and
+// case-folding arrive in later phases; see docs/plan-regexp.md for the full
+// roadmap.
 package onigmo

@@ -137,6 +137,57 @@ func TestParseGroups(t *testing.T) {
 	}
 }
 
+func TestParseLookaround(t *testing.T) {
+	for _, tc := range []struct {
+		pat            string
+		behind, negate bool
+	}{
+		{`(?=a)`, false, false},
+		{`(?!a)`, false, true},
+		{`(?<=a)`, true, false},
+		{`(?<!a)`, true, true},
+	} {
+		r := mustParse(t, tc.pat)
+		l, ok := r.Root.(*ast.Look)
+		if !ok {
+			t.Fatalf("%q: expected ast.Look, got %#v", tc.pat, r.Root)
+		}
+		if l.Behind != tc.behind || l.Negate != tc.negate {
+			t.Errorf("%q: behind=%v negate=%v want %v/%v", tc.pat, l.Behind, l.Negate, tc.behind, tc.negate)
+		}
+	}
+}
+
+func TestParseLookbehindWidths(t *testing.T) {
+	for _, tc := range []struct {
+		pat      string
+		min, max int
+	}{
+		{`(?<=abc)x`, 3, 3},     // fixed concat
+		{`(?<=a{2})x`, 2, 2},    // fixed repetition
+		{`(?<=ab|c)x`, 1, 2},    // alternation of differing fixed widths
+		{`(?<=(ab))x`, 2, 2},    // group
+		{`(?<=^ab)x`, 2, 2},     // anchor contributes zero width
+		{`(?<=(?=z)ab)x`, 2, 2}, // nested lookahead is zero-width
+		{`(?<=)x`, 0, 0},        // empty body
+	} {
+		r := mustParse(t, tc.pat)
+		c := r.Root.(*ast.Concat)
+		l := c.Subs[0].(*ast.Look)
+		if l.Min != tc.min || l.Max != tc.max {
+			t.Errorf("%q: width [%d,%d] want [%d,%d]", tc.pat, l.Min, l.Max, tc.min, tc.max)
+		}
+	}
+}
+
+func TestParsePrevMatchAnchor(t *testing.T) {
+	r := mustParse(t, `\Gabc`)
+	c := r.Root.(*ast.Concat)
+	if c.Subs[0].(*ast.Anchor).Kind != ast.AnchorPrevMatch {
+		t.Fatalf("expected \\G anchor, got %#v", c.Subs[0])
+	}
+}
+
 func TestParseEscapes(t *testing.T) {
 	r := mustParse(t, `\A\z\Z\n\t\r\.\\`)
 	c := r.Root.(*ast.Concat)
@@ -273,8 +324,6 @@ func TestParseErrors(t *testing.T) {
 		`(`,              // missing closing )
 		`)`,              // unexpected )
 		`(?`,             // unsupported group syntax at EOF
-		`(?<=a)`,         // lookbehind not supported (Phase 1)
-		`(?<!a)`,         // negative lookbehind not supported (Phase 1)
 		`(?<a)`,          // missing > in group name
 		`(?<>a)`,         // empty group name
 		`(?<a b>x)`,      // invalid character in group name
@@ -301,6 +350,15 @@ func TestParseErrors(t *testing.T) {
 		`a|*`,            // error in alternation branch after |
 		`(*)`,            // error inside a group's alternation
 		`[a-\q]`,         // unsupported escape as range hi
+		`(?=a`,           // lookahead missing closing )
+		`(?!a`,           // negative lookahead missing closing )
+		`(?<=a`,          // lookbehind missing closing )
+		`(?<!a`,          // negative lookbehind missing closing )
+		`(?=*)`,          // error inside a lookahead body
+		`(?<=a*)b`,       // variable-width lookbehind (unbounded quantifier)
+		`(?<=a{2,3})b`,   // variable-width lookbehind ({m,n}, m != n)
+		`(?<=(a)\1)b`,    // variable-width lookbehind (backreference)
+		`(?<=a|b+)c`,     // lookbehind alternation with a variable-width branch
 	} {
 		if _, err := Parse(pat); !errors.Is(err, ErrSyntax) {
 			t.Errorf("Parse(%q): expected ErrSyntax, got %v", pat, err)
@@ -331,6 +389,8 @@ func walk(n ast.Node, f func(ast.Node)) {
 	case *ast.Star:
 		walk(t.Sub, f)
 	case *ast.Group:
+		walk(t.Sub, f)
+	case *ast.Look:
 		walk(t.Sub, f)
 	}
 }

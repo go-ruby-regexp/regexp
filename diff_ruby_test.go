@@ -103,6 +103,36 @@ var diffCorpus = []rubyCase{
 	{`xyz`, "abc"},
 	{`\d+`, "abc"},
 	{`^abc$`, "xabc"},
+
+	// Lookahead (Phase 2).
+	{`foo(?=bar)`, "foobar"},
+	{`foo(?=bar)`, "foobaz"},
+	{`foo(?!bar)`, "foobaz"},
+	{`foo(?!bar)`, "foobar"},
+	{`\d+(?=px)`, "10px 20em"},
+	{`\d+(?!px)`, "10px 20em"},
+	{`a(?=b(?=c))`, "abc"},
+	{`a(?=b(?=c))`, "abd"},
+	{`(?=(\d+))\d`, "x42y"},
+	{`q(?=u)i?`, "quit"},
+
+	// Lookbehind (Phase 2): fixed/bounded width only.
+	{`(?<=foo)bar`, "foobar"},
+	{`(?<=foo)bar`, "xxxbar"},
+	{`(?<!foo)bar`, "xxxbar"},
+	{`(?<!foo)bar`, "foobar"},
+	{`(?<=\$)\d+`, "price $42 here"},
+	{`(?<=ab|c)d`, "abd"},
+	{`(?<=ab|c)d`, "cd"},
+	{`(?<=a.c)d`, "abcd"},
+	{`(?<=\d{3})x`, "123x"},
+	{`(?<!\d)\d`, "a1b2"},
+
+	// \G (Phase 2): anchors to the scan origin for a single match.
+	{`\Gabc`, "abcdef"},
+	{`\Gabc`, "xabcdef"},
+	{`\G\d+`, "123abc"},
+	{`\G\d+`, "abc123"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

@@ -35,6 +35,16 @@ const (
 	OpAssertEndLine
 	// OpBackref matches the text previously captured by group Slot.
 	OpBackref
+	// OpAssertPrevMatch asserts the position equals the scan/previous-match start
+	// (\G).
+	OpAssertPrevMatch
+	// OpLook begins a lookaround assertion. Its sub-program is emitted inline
+	// immediately after it and is terminated by OpLookEnd; X is the continuation
+	// pc just past that OpLookEnd. Negate selects the negative form, Behind the
+	// lookbehind form, and Min/Max bound the lookbehind width.
+	OpLook
+	// OpLookEnd marks a successful run of a lookaround sub-program.
+	OpLookEnd
 	// OpMatch reports a successful match.
 	OpMatch
 )
@@ -46,7 +56,10 @@ type Inst struct {
 	X, Y   int              // OpSplit, OpJmp
 	Slot   int              // OpSave
 	Ranges []ast.ClassRange // OpClass
-	Negate bool             // OpClass
+	Negate bool             // OpClass, OpLook
+	Behind bool             // OpLook
+	Min    int              // OpLook (lookbehind width lower bound)
+	Max    int              // OpLook (lookbehind width upper bound)
 }
 
 // Program is a compiled regular expression: the instruction list, the number of
@@ -108,6 +121,8 @@ func (b *builder) node(n ast.Node) {
 		b.group(t)
 	case *ast.Backref:
 		b.emit(Inst{Op: OpBackref, Slot: t.Index})
+	case *ast.Look:
+		b.look(t)
 	case *ast.Star:
 		b.repeat(t)
 	}
@@ -125,7 +140,20 @@ func (b *builder) anchor(a *ast.Anchor) {
 		b.emit(Inst{Op: OpAssertBeginLine})
 	case ast.AnchorEndLine:
 		b.emit(Inst{Op: OpAssertEndLine})
+	case ast.AnchorPrevMatch:
+		b.emit(Inst{Op: OpAssertPrevMatch})
 	}
+}
+
+// look compiles a lookaround assertion. It emits OpLook, then the sub-program
+// inline, then OpLookEnd, and finally patches OpLook.X to the continuation just
+// past OpLookEnd. For lookbehind it records the sub-pattern's byte-width bounds
+// so the VM can position the nested run correctly.
+func (b *builder) look(l *ast.Look) {
+	look := b.emit(Inst{Op: OpLook, Negate: l.Negate, Behind: l.Behind, Min: l.Min, Max: l.Max})
+	b.node(l.Sub)
+	b.emit(Inst{Op: OpLookEnd})
+	b.insts[look].X = len(b.insts)
 }
 
 func (b *builder) group(g *ast.Group) {

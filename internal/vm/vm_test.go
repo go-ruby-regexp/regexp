@@ -33,6 +33,16 @@ func matchSpan(t *testing.T, pat, input string) (int, int, bool) {
 	return caps[0], caps[1], true
 }
 
+// matchString reports whether pat matches anywhere in input.
+func matchString(t *testing.T, pat, input string) bool {
+	t.Helper()
+	_, ok, err := Match(build(t, pat), input, DefaultBudget)
+	if err != nil {
+		t.Fatalf("Match(%q,%q): %v", pat, input, err)
+	}
+	return ok
+}
+
 func TestMatchBasics(t *testing.T) {
 	for _, tc := range []struct {
 		pat, in    string
@@ -150,6 +160,182 @@ func TestClassMatchNegate(t *testing.T) {
 	}
 	if !classMatch(in, '0') {
 		t.Error("negated [a-z] must accept '0'")
+	}
+}
+
+func TestMatchLookaround(t *testing.T) {
+	for _, tc := range []struct {
+		pat, in    string
+		begin, end int
+		ok         bool
+	}{
+		// Positive / negative lookahead.
+		{`foo(?=bar)`, "foobar", 0, 3, true},
+		{`foo(?=bar)`, "foobaz", -1, -1, false},
+		{`foo(?!bar)`, "foobaz", 0, 3, true},
+		{`foo(?!bar)`, "foobar", -1, -1, false},
+		// Positive / negative lookbehind.
+		{`(?<=foo)bar`, "foobar", 3, 6, true},
+		{`(?<=foo)bar`, "xxxbar", -1, -1, false},
+		{`(?<!foo)bar`, "xxxbar", 3, 6, true},
+		{`(?<!foo)bar`, "foobar", -1, -1, false},
+		// Lookbehind with alternation of differing widths (widest first).
+		{`(?<=ab|c)d`, "cd", 1, 2, true},
+		{`(?<=ab|c)d`, "abd", 2, 3, true},
+		{`(?<=ab|c)d`, "zd", -1, -1, false},
+		// Fixed-width lookbehind with a class/dot body.
+		{`(?<=a.c)d`, "abcd", 3, 4, true},
+		// Captures inside positive lookahead are visible afterwards.
+		{`(?=(b))b`, "ab", 1, 2, true},
+		// Nested lookaround.
+		{`a(?=b(?=c))`, "abc", 0, 1, true},
+		{`a(?=b(?=c))`, "abd", -1, -1, false},
+		// Lookbehind at the very start cannot match (would need bytes < 0).
+		{`(?<=ab)c`, "c", -1, -1, false},
+	} {
+		b, e, ok := matchSpan(t, tc.pat, tc.in)
+		if ok != tc.ok || b != tc.begin || e != tc.end {
+			t.Errorf("/%s/ on %q = (%d,%d,%v) want (%d,%d,%v)",
+				tc.pat, tc.in, b, e, ok, tc.begin, tc.end, tc.ok)
+		}
+	}
+}
+
+func TestMatchLookaheadCapture(t *testing.T) {
+	// The capture made inside a positive lookahead must survive to the result.
+	caps, ok, err := Match(build(t, `(?=(\d+))\d`), "x42y", DefaultBudget)
+	if err != nil || !ok {
+		t.Fatalf("match failed: ok=%v err=%v", ok, err)
+	}
+	// group 0 = "4" at [1,2); group 1 (inside lookahead) = "42" at [1,3).
+	if caps[2] != 1 || caps[3] != 3 {
+		t.Fatalf("lookahead capture = [%d,%d] want [1,3] (all %v)", caps[2], caps[3], caps)
+	}
+}
+
+func TestMatchPrevMatchAnchor(t *testing.T) {
+	// \G anchors to the scan origin (position 0) for a single Match.
+	for _, tc := range []struct {
+		pat, in string
+		ok      bool
+	}{
+		{`\Gabc`, "abc", true},
+		{`\Gabc`, "xabc", false},
+		{`\G\d+`, "123", true},
+	} {
+		_, _, ok := matchSpan(t, tc.pat, tc.in)
+		if ok != tc.ok {
+			t.Errorf("/%s/ on %q matched=%v want %v", tc.pat, tc.in, ok, tc.ok)
+		}
+	}
+}
+
+func TestMatchPrevMatchInsideLook(t *testing.T) {
+	// \G evaluated inside a lookaround sub-program (exercises OpAssertPrevMatch
+	// in execLook).
+	if !matchString(t, `(?=\Gabc)abc`, "abc") {
+		t.Fatal(`(?=\Gabc)abc should match "abc"`)
+	}
+	if matchString(t, `(?=\Gabc)abc`, "xabc") {
+		t.Fatal(`(?=\Gabc)abc should not match "xabc"`)
+	}
+}
+
+func TestMatchBackrefInsideLook(t *testing.T) {
+	// A backreference inside a lookahead body, including the unset-group path.
+	if !matchString(t, `(a)(?=\1)a`, "aa") {
+		t.Fatal(`(a)(?=\1)a should match "aa"`)
+	}
+	if matchString(t, `(a)(?=\1)a`, "ab") {
+		t.Fatal(`(a)(?=\1)a should not match "ab"`)
+	}
+}
+
+func TestMatchEmptyLoopInsideLook(t *testing.T) {
+	// An empty-matching star inside a lookahead must not spin (exercises the
+	// visited guard's "already explored" branch in execLook).
+	if !matchString(t, `(?=(a*)*b)`, "aaab") {
+		t.Fatal(`(?=(a*)*b) should match "aaab"`)
+	}
+}
+
+func TestBudgetExceededInsideLook(t *testing.T) {
+	// A tiny budget is exhausted while running a lookaround sub-program.
+	_, _, err := Match(build(t, `(?=a+b)`), "aaaaaaaa", 5)
+	if !errors.Is(err, ErrBudget) {
+		t.Fatalf("expected ErrBudget inside look, got %v", err)
+	}
+}
+
+func TestBudgetExceededInsideNestedLook(t *testing.T) {
+	// The budget is exhausted inside a lookaround nested within another, so the
+	// error must propagate out of the inner execLook (OpLook handler) too.
+	_, _, err := Match(build(t, `(?=a(?=a+b))`), "aaaaaaaa", 6)
+	if !errors.Is(err, ErrBudget) {
+		t.Fatalf("expected ErrBudget inside nested look, got %v", err)
+	}
+}
+
+func TestBackrefUnsetGroupInsideLook(t *testing.T) {
+	// (z)? does not participate, so \1 inside the lookahead is the empty string,
+	// which always succeeds (exercises the unset-group branch in execLook).
+	if !matchString(t, `(z)?(?=\1)a`, "a") {
+		t.Fatal(`(z)?(?=\1)a should match "a"`)
+	}
+}
+
+func TestLookBodyExercisesEveryOpcode(t *testing.T) {
+	// Each pattern routes a different opcode through the lookaround executor.
+	for _, tc := range []struct {
+		pat, in string
+		ok      bool
+	}{
+		{`a(?=.)`, "ab", true},               // OpAny inside look
+		{`a(?=.)`, "a\n", false},             // OpAny rejects newline
+		{`a(?=[0-9])`, "a5", true},           // OpClass inside look
+		{`a(?=b|cc)`, "acc", true},           // OpSplit + OpJmp inside look
+		{`a(?=b|cc)`, "axx", false},          // both alternatives fail
+		{`a(?=\Ab)`, "ab", false},            // OpAssertBeginText (sp != 0) fails
+		{`(?=\Aab)ab`, "ab", true},           // OpAssertBeginText succeeds
+		{`a(?=b\z)`, "ab", true},             // OpAssertEndText inside look
+		{`a(?=b\z)`, "abc", false},           // not end of text
+		{`a(?=b\Z)`, "ab\n", true},           // OpAssertEndTextOptNL inside look
+		{`a(?=b$)`, "ab\nc", true},           // OpAssertEndLine inside look
+		{`\n(?=^b)`, "\nb", true},            // OpAssertBeginLine inside look
+		{`a(?=(b)*c)`, "abbbc", true},        // OpSave + greedy loop inside look
+		{`a(?=(b*)*c)`, "abbc", true},        // empty-loop guard inside look
+		{`(?<=ab)(?<=.b)c`, "abc", true},     // stacked lookbehind, dot width
+		{`(?<=abc)d`, "ab", false},           // lookbehind start clamped (sp-w<0)
+		{`(?<=ab)x`, "abc", false},           // lookbehind ok but no following x
+	} {
+		if got := matchString(t, tc.pat, tc.in); got != tc.ok {
+			t.Errorf("/%s/ on %q matched=%v want %v", tc.pat, tc.in, got, tc.ok)
+		}
+	}
+}
+
+func TestLookbehindEndMustAlign(t *testing.T) {
+	// A fixed-width lookbehind whose body could match a shorter span must still
+	// be anchored to end exactly at the current position. (?<=a.) requires two
+	// bytes ending right before 'c'.
+	if !matchString(t, `(?<=a.)c`, "abc") {
+		t.Fatal(`(?<=a.)c should match "abc"`)
+	}
+	if matchString(t, `(?<=a.)c`, "ac") {
+		// only one byte precedes 'c', so the two-wide lookbehind cannot align.
+		t.Fatal(`(?<=a.)c should not match "ac"`)
+	}
+}
+
+func TestBudgetExceededInsideLookbehind(t *testing.T) {
+	// Exhaust the budget while a lookbehind sub-program runs. Several budgets
+	// straddle the point where the failure occurs inside the candidate-position
+	// loop of look, so its error-propagation path is exercised.
+	for _, b := range []int{6, 10, 12, 14, 16} {
+		_, _, err := Match(build(t, `(?<=a{4})b`), "aaaab", b)
+		if !errors.Is(err, ErrBudget) {
+			t.Fatalf("budget=%d: expected ErrBudget inside lookbehind, got %v", b, err)
+		}
 	}
 }
 

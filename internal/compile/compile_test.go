@@ -131,6 +131,50 @@ func TestCompileCapturingGroup(t *testing.T) {
 	}
 }
 
+func TestCompileLookahead(t *testing.T) {
+	p := compilePattern(t, `a(?=b)`)
+	if opCount(p, OpLook) != 1 || opCount(p, OpLookEnd) != 1 {
+		t.Fatalf("lookahead should emit one OpLook and one OpLookEnd: %+v", p.Insts)
+	}
+	// OpLook.X must point just past its OpLookEnd.
+	for i, in := range p.Insts {
+		if in.Op == OpLook {
+			if p.Insts[in.X-1].Op != OpLookEnd {
+				t.Fatalf("OpLook.X (%d) must follow OpLookEnd, got %+v", in.X, p.Insts[in.X-1])
+			}
+			if in.Behind {
+				t.Fatalf("inst %d: lookahead must not set Behind", i)
+			}
+		}
+	}
+}
+
+func TestCompileLookbehindWidth(t *testing.T) {
+	p := compilePattern(t, `(?<=ab|c)d`)
+	var found bool
+	for _, in := range p.Insts {
+		if in.Op == OpLook {
+			found = true
+			if !in.Behind {
+				t.Fatal("lookbehind must set Behind")
+			}
+			if in.Min != 1 || in.Max != 2 {
+				t.Fatalf("lookbehind width = [%d,%d] want [1,2]", in.Min, in.Max)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no OpLook emitted")
+	}
+}
+
+func TestCompilePrevMatchAnchor(t *testing.T) {
+	p := compilePattern(t, `\Ga`)
+	if opCount(p, OpAssertPrevMatch) != 1 {
+		t.Fatalf("\\G should emit OpAssertPrevMatch: %+v", p.Insts)
+	}
+}
+
 func TestCompileAlternateLinks(t *testing.T) {
 	p := compilePattern(t, "a|b|c")
 	if opCount(p, OpSplit) != 2 || opCount(p, OpJmp) != 2 {
