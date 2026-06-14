@@ -2,6 +2,7 @@ package onigmo_test
 
 import (
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -146,6 +147,13 @@ func engineSpans(re *onigmo.Regexp, input string) string {
 }
 
 func TestDifferentialAgainstRuby(t *testing.T) {
+	// The oracle shells out to `ruby -e` with patterns/inputs containing
+	// newlines and regex metacharacters; argument quoting and CRLF handling on
+	// Windows make this unreliable, so restrict it to Unix (Linux/macOS CI
+	// exercise the full corpus).
+	if runtime.GOOS == "windows" {
+		t.Skip("differential oracle shells out to ruby; skipped on Windows")
+	}
 	if _, err := exec.LookPath("ruby"); err != nil {
 		t.Skip("ruby not on PATH; skipping differential test")
 	}
