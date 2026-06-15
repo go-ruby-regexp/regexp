@@ -289,6 +289,89 @@ func TestParseClassEscapeMembers(t *testing.T) {
 	}
 }
 
+func TestParsePosixClasses(t *testing.T) {
+	// Every standard POSIX class name expands to the expected ASCII byte ranges
+	// (verified against MRI Onigmo 4.0.5).
+	for _, tc := range []struct {
+		name string
+		want []ast.ClassRange
+	}{
+		{"alpha", []ast.ClassRange{{Lo: 'A', Hi: 'Z'}, {Lo: 'a', Hi: 'z'}}},
+		{"digit", []ast.ClassRange{{Lo: '0', Hi: '9'}}},
+		{"alnum", []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'Z'}, {Lo: 'a', Hi: 'z'}}},
+		{"upper", []ast.ClassRange{{Lo: 'A', Hi: 'Z'}}},
+		{"lower", []ast.ClassRange{{Lo: 'a', Hi: 'z'}}},
+		{"space", []ast.ClassRange{{Lo: '\t', Hi: '\r'}, {Lo: ' ', Hi: ' '}}},
+		{"blank", []ast.ClassRange{{Lo: '\t', Hi: '\t'}, {Lo: ' ', Hi: ' '}}},
+		{"cntrl", []ast.ClassRange{{Lo: 0, Hi: 0x1f}, {Lo: 0x7f, Hi: 0x7f}}},
+		{"graph", []ast.ClassRange{{Lo: '!', Hi: '~'}}},
+		{"print", []ast.ClassRange{{Lo: ' ', Hi: '~'}}},
+		{"punct", []ast.ClassRange{{Lo: '!', Hi: '/'}, {Lo: ':', Hi: '@'}, {Lo: '[', Hi: '`'}, {Lo: '{', Hi: '~'}}},
+		{"xdigit", []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'F'}, {Lo: 'a', Hi: 'f'}}},
+		{"word", []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'Z'}, {Lo: '_', Hi: '_'}, {Lo: 'a', Hi: 'z'}}},
+	} {
+		r := mustParse(t, "[[:"+tc.name+":]]")
+		cls := r.Root.(*ast.Class)
+		if !reflect.DeepEqual(cls.Ranges, tc.want) {
+			t.Errorf("[[:%s:]] ranges = %v want %v", tc.name, cls.Ranges, tc.want)
+		}
+		if cls.Negate {
+			t.Errorf("[[:%s:]] should not negate the outer class", tc.name)
+		}
+	}
+}
+
+func TestParsePosixClassNegated(t *testing.T) {
+	// [[:^digit:]] is the complement of [0-9] over the full byte range.
+	r := mustParse(t, "[[:^digit:]]")
+	cls := r.Root.(*ast.Class)
+	want := []ast.ClassRange{{Lo: 0, Hi: '0' - 1}, {Lo: '9' + 1, Hi: 0xff}}
+	if !reflect.DeepEqual(cls.Ranges, want) {
+		t.Fatalf("[[:^digit:]] ranges = %v want %v", cls.Ranges, want)
+	}
+}
+
+func TestParsePosixClassMixedWithMembers(t *testing.T) {
+	// A POSIX class can be combined with ordinary members and other POSIX
+	// classes inside the same bracket expression.
+	r := mustParse(t, "[x[:digit:]_[:upper:]]")
+	cls := r.Root.(*ast.Class)
+	want := []ast.ClassRange{
+		{Lo: 'x', Hi: 'x'},
+		{Lo: '0', Hi: '9'},
+		{Lo: '_', Hi: '_'},
+		{Lo: 'A', Hi: 'Z'},
+	}
+	if !reflect.DeepEqual(cls.Ranges, want) {
+		t.Fatalf("ranges = %v want %v", cls.Ranges, want)
+	}
+}
+
+func TestParseLiteralBracketInClass(t *testing.T) {
+	// A '[' inside a class that is not followed by ':' is a literal member.
+	r := mustParse(t, "[a[b]")
+	cls := r.Root.(*ast.Class)
+	want := []ast.ClassRange{{Lo: 'a', Hi: 'a'}, {Lo: '[', Hi: '['}, {Lo: 'b', Hi: 'b'}}
+	if !reflect.DeepEqual(cls.Ranges, want) {
+		t.Fatalf("ranges = %v want %v", cls.Ranges, want)
+	}
+}
+
+func TestParsePosixClassErrors(t *testing.T) {
+	for _, pat := range []string{
+		`[[:bogus:]]`, // unknown class name
+		`[[:alpha]`,   // name not closed by ":]" (hits ']' instead of ':')
+		`[[:alph`,     // runs to EOF before ":]"
+		`[[:alpha:`,   // ':' present but no ']' after it
+		`[[:Alpha:]]`, // uppercase letter is not a valid name character
+		`[[:^:]]`,     // empty (and thus unknown) negated name
+	} {
+		if _, err := Parse(pat); !errors.Is(err, ErrSyntax) {
+			t.Errorf("Parse(%q): expected ErrSyntax, got %v", pat, err)
+		}
+	}
+}
+
 func TestNegateRanges(t *testing.T) {
 	// \D inside a class is the complement of [0-9].
 	r := mustParse(t, `[\D]`)

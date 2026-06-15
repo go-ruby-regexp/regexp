@@ -8,6 +8,10 @@
 // capturing and non-capturing groups, and alternation. Phase 1 adds named
 // groups (?<name>...) and backreferences (\1, \k<name>). Phase 2 adds the
 // lookaround assertions (?=...) (?!...) (?<=...) (?<!...) and the \G anchor.
+// Phase 3 begins with POSIX bracket expressions [[:name:]] (and negated
+// [[:^name:]]) inside character classes, for the standard classes alpha, digit,
+// alnum, upper, lower, space, blank, cntrl, graph, print, punct, xdigit, and
+// word; their byte ranges match Onigmo's defaults for the ASCII byte space.
 //
 // Lookbehind, as in Onigmo/Ruby, requires each alternative of its body to have
 // a constant byte width (different alternatives may differ, e.g. (?<=ab|c));
@@ -514,6 +518,17 @@ func (p *parser) parseClass() (ast.Node, error) {
 			return cls, nil
 		}
 		first = false
+		// A POSIX bracket expression [[:name:]] (or negated [[:^name:]]) appears
+		// only inside a character class. It is recognised when the cursor is at a
+		// '[' immediately followed by ':'; otherwise '[' is a literal member.
+		if p.peek() == '[' && p.pos+1 < len(p.src) && p.src[p.pos+1] == ':' {
+			ranges, err := p.parsePosixClass()
+			if err != nil {
+				return nil, err
+			}
+			cls.Ranges = append(cls.Ranges, ranges...)
+			continue
+		}
 		lo, sub, err := p.parseClassItem()
 		if err != nil {
 			return nil, err
@@ -578,6 +593,84 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, error) {
 		return e, nil, nil
 	default:
 		return 0, nil, p.errorf("unsupported escape \\%c in character class", e)
+	}
+}
+
+// parsePosixClass parses a POSIX bracket expression [[:name:]] or its negated
+// form [[:^name:]] inside a character class. The cursor is at the leading '['
+// (which is known to be followed by ':'). It returns the byte ranges the class
+// contributes; for the negated form those are the complement, over the full
+// 0..255 byte range, of the positive class — matching Onigmo's byte-oriented
+// behaviour where, e.g., [[:^alpha:]] matches any non-ASCII-letter byte.
+func (p *parser) parsePosixClass() ([]ast.ClassRange, error) {
+	p.next() // consume '['
+	p.next() // consume ':'
+	negate := false
+	if !p.eof() && p.peek() == '^' {
+		p.next()
+		negate = true
+	}
+	start := p.pos
+	for !p.eof() && p.peek() != ':' {
+		c := p.peek()
+		if !(c >= 'a' && c <= 'z') {
+			// POSIX class names are lowercase ASCII letters; anything else means
+			// this is not a well-formed bracket expression.
+			return nil, p.errorf("invalid POSIX bracket name")
+		}
+		p.next()
+	}
+	// Require the closing ":]".
+	if p.eof() || p.peek() != ':' || p.pos+1 >= len(p.src) || p.src[p.pos+1] != ']' {
+		return nil, p.errorf("premature end of POSIX bracket class")
+	}
+	name := p.src[start:p.pos]
+	p.next() // consume ':'
+	p.next() // consume ']'
+	ranges, ok := posixClass(name)
+	if !ok {
+		return nil, p.errorf("invalid POSIX bracket type [:%s:]", name)
+	}
+	if negate {
+		return negateRanges(ranges), nil
+	}
+	return ranges, nil
+}
+
+// posixClass returns the ASCII byte ranges for a POSIX bracket class name,
+// reporting whether the name is one of the standard classes. The ranges match
+// Onigmo's defaults for the ASCII portion of the byte space (verified against
+// MRI); the negated form complements them over the full byte range.
+func posixClass(name string) ([]ast.ClassRange, bool) {
+	switch name {
+	case "alpha":
+		return []ast.ClassRange{{Lo: 'A', Hi: 'Z'}, {Lo: 'a', Hi: 'z'}}, true
+	case "digit":
+		return []ast.ClassRange{{Lo: '0', Hi: '9'}}, true
+	case "alnum":
+		return []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'Z'}, {Lo: 'a', Hi: 'z'}}, true
+	case "upper":
+		return []ast.ClassRange{{Lo: 'A', Hi: 'Z'}}, true
+	case "lower":
+		return []ast.ClassRange{{Lo: 'a', Hi: 'z'}}, true
+	case "space":
+		return []ast.ClassRange{{Lo: '\t', Hi: '\r'}, {Lo: ' ', Hi: ' '}}, true
+	case "blank":
+		return []ast.ClassRange{{Lo: '\t', Hi: '\t'}, {Lo: ' ', Hi: ' '}}, true
+	case "cntrl":
+		return []ast.ClassRange{{Lo: 0, Hi: 0x1f}, {Lo: 0x7f, Hi: 0x7f}}, true
+	case "graph":
+		return []ast.ClassRange{{Lo: '!', Hi: '~'}}, true
+	case "print":
+		return []ast.ClassRange{{Lo: ' ', Hi: '~'}}, true
+	case "punct":
+		return []ast.ClassRange{{Lo: '!', Hi: '/'}, {Lo: ':', Hi: '@'}, {Lo: '[', Hi: '`'}, {Lo: '{', Hi: '~'}}, true
+	case "xdigit":
+		return []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'F'}, {Lo: 'a', Hi: 'f'}}, true
+	case "word":
+		return []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'Z'}, {Lo: '_', Hi: '_'}, {Lo: 'a', Hi: 'z'}}, true
+	default:
+		return nil, false
 	}
 }
 

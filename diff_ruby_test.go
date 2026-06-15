@@ -133,6 +133,23 @@ var diffCorpus = []rubyCase{
 	{`\Gabc`, "xabcdef"},
 	{`\G\d+`, "123abc"},
 	{`\G\d+`, "abc123"},
+
+	// POSIX bracket classes (Phase 3).
+	{`[[:alpha:]]+`, "ab12cd"},
+	{`[[:digit:]]+`, "x42y"},
+	{`[[:alnum:]]+`, "  a1b2  "},
+	{`[[:upper:]]+`, "abCDef"},
+	{`[[:lower:]]+`, "ABcdEF"},
+	{`[[:space:]]+`, "x \t\ny"},
+	{`[[:blank:]]+`, "x \ty"},
+	{`[[:xdigit:]]+`, "ghFF00zz"},
+	{`[[:punct:]]+`, "a!@#b"},
+	{`[[:word:]]+`, "  foo_bar  "},
+	{`[[:graph:]]+`, "  ab!  "},
+	{`[[:print:]]+`, "\tab \n"},
+	{`[[:^digit:]]+`, "12ab34"},
+	{`[^[:space:]]+`, "  hi there "},
+	{`[x[:digit:]]+`, "x1y2"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each
