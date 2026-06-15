@@ -51,13 +51,32 @@
 // Onigmo POSIX-style aliases Alpha, Alnum, Digit, Space, Upper, Lower and Word
 // (following Ruby's definitions). A property may also appear inside a character
 // class ([\p{L}\d]), which makes that class rune-aware while its ASCII
-// byte-range members keep working. Every other construct stays byte-oriented
-// and byte-exact; a rune-aware atom never matches at a UTF-8 continuation byte,
-// so the scan never tests a code point mid-character (as MRI, which positions by
-// character). Note that match offsets remain byte offsets, whereas MRI reports
-// character offsets, so the two agree on matched text but not on the numeric
-// span on multi-byte input. (Rune-level Unicode case-folding for /i is described
-// above.)
+// byte-range members keep working. A rune-aware atom never matches at a UTF-8
+// continuation byte, so the scan never tests a code point mid-character (as MRI,
+// which positions by character). Note that match offsets remain byte offsets,
+// whereas MRI reports character offsets, so the two agree on matched text but
+// not on the numeric span on multi-byte input. (Rune-level Unicode case-folding
+// for /i is described above.)
+//
+// Multi-encoding (Phase 3) gives the Regexp a first-class encoding, matching the
+// way Ruby's Regexp#encoding governs matching on a UTF-8 versus a binary string.
+// In the default UTF8 mode the dot (.) and a byte-oriented character class
+// advance by a whole UTF-8 code point, so /./ matches a complete multi-byte
+// character — /./ on "é" consumes "é" as one unit, and [^a] consumes a whole
+// character rather than a single byte, exactly as MRI does on a UTF-8 string
+// (a positive ASCII range such as [a-z] still fails on a multi-byte character,
+// whose code point exceeds the range). This resolves the engine's original
+// "dot matches one byte" limitation. In ASCII8BIT mode (Ruby's binary /n
+// encoding, selected by CompileEnc(pattern, ASCII8BIT)) every atom advances a
+// single byte and Unicode case-folding (/i) and \p{…} properties operate per
+// byte, ASCII-only. The encoding is exposed as re.Encoding(). Match offsets are
+// byte offsets in both modes. In UTF8 mode a bare . or a byte-oriented class
+// inside a fixed-width lookbehind has a variable byte width (1..4); the
+// lookbehind's candidate-position scan enumerates the alignments and only a
+// code-point-aligned one matches, so a lookbehind over a multi-byte character
+// works ((?<=.)x matches the x after "é"). Multi-byte character-class members
+// written literally ([é], [à-ï]) and per-encoding cursors beyond UTF-8 and
+// ASCII-8BIT (UTF-16/32, EUC, Shift_JIS) remain follow-ups.
 //
 // Phase 3 also adds the hex-digit class \h (Onigmo's [0-9A-Fa-f]) and its
 // byte-complement \H — usable standalone or inside a character class, and

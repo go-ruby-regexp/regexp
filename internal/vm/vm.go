@@ -251,9 +251,9 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 		case compile.OpAny:
-			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
+			if ok, w := m.anyStep(in, sp); ok {
 				pc++
-				sp++
+				sp += w
 				m.consumed()
 				continue
 			}
@@ -481,9 +481,9 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 				continue
 			}
 		case compile.OpAny:
-			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
+			if ok, w := m.anyStep(in, sp); ok {
 				pc++
-				sp++
+				sp += w
 				clear(visited)
 				continue
 			}
@@ -778,7 +778,21 @@ func charMatch(in compile.Inst, b byte) bool {
 // "é" and /k/i matches the Kelvin sign). Like every rune-aware atom it refuses to
 // match at a UTF-8 continuation byte and returns ok=false at end of input.
 func (m *machine) foldCharStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) || isContinuationByte(m.input[sp]) {
+	if sp >= len(m.input) {
+		return false, 0
+	}
+	if m.prog.Enc == compile.ASCII8BIT {
+		// Binary mode: folding is ASCII-only and per byte. The pattern code point
+		// is matched against the single input byte with ASCII case flipping; a
+		// non-ASCII pattern code point (or input byte) only matches its exact
+		// byte, which a one-byte read of a multi-byte partner never is.
+		b := m.input[sp]
+		if in.Rune < 128 && (byte(in.Rune) == b || swapASCIICase(byte(in.Rune)) == b) {
+			return true, 1
+		}
+		return false, 0
+	}
+	if isContinuationByte(m.input[sp]) {
 		return false, 0
 	}
 	r, w := utf8.DecodeRuneInString(m.input[sp:])
@@ -788,18 +802,79 @@ func (m *machine) foldCharStep(in compile.Inst, sp int) (ok bool, width int) {
 	return false, 0
 }
 
+// anyStep reports whether the dot (OpAny) matches at position sp and, if so, how
+// many bytes it consumes. In UTF8 mode it consumes a whole code point, so `.`
+// matches a multi-byte character as one unit (MRI's behaviour on a UTF-8
+// string); in ASCII8BIT mode it consumes a single byte. A newline is excluded
+// unless in.DotAll (Ruby's /m): the exclusion tests the leading byte, which is a
+// '\n' only for a one-byte code point, so it is identical in both modes. An
+// invalid UTF-8 lead byte decodes as utf8.RuneError with width 1, so the scan
+// advances one byte rather than stalling (MRI raises on invalid UTF-8; this
+// engine is lenient — a documented divergence). It returns ok=false at end of
+// input.
+func (m *machine) anyStep(in compile.Inst, sp int) (ok bool, width int) {
+	if sp >= len(m.input) {
+		return false, 0
+	}
+	if !in.DotAll && m.input[sp] == '\n' {
+		return false, 0
+	}
+	if m.prog.Enc == compile.ASCII8BIT {
+		return true, 1
+	}
+	if isContinuationByte(m.input[sp]) {
+		// UTF8 mode: like MRI, which positions only at character boundaries, the
+		// dot never starts inside a multi-byte sequence, so a start offset landing
+		// on a continuation byte fails and only a code-point-aligned offset matches.
+		return false, 0
+	}
+	_, w := utf8.DecodeRuneInString(m.input[sp:])
+	return true, w
+}
+
 // classStep reports whether the OpClass instruction in matches at position sp
-// and, if so, how many bytes it consumes. A byte-oriented class (no \p{…} member
-// and not folded) consumes one byte; a rune-aware class — one carrying a \p{…}
-// member or folded under /i — decodes one UTF-8 code point and consumes its byte
-// length. It returns ok=false at end of input.
+// and, if so, how many bytes it consumes.
+//
+// A byte-oriented class (no \p{…} member, no code-point range, not folded) in
+// UTF8 mode decodes one code point and tests it against the class's byte ranges
+// interpreted as code-point bounds (all ASCII, since they come from byte
+// syntax), so a negated class such as [^a] consumes a whole multi-byte character
+// while a positive ASCII range such as [a-z] fails on one (its rune value
+// exceeds the range) — exactly as MRI behaves on a UTF-8 string. In ASCII8BIT
+// mode it tests and consumes a single byte. A rune-aware class — one carrying a
+// \p{…} member, a code-point range, or folded under /i — always decodes one
+// UTF-8 code point in UTF8 mode and tests a single byte in ASCII8BIT mode. It
+// returns ok=false at end of input.
 func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 	if sp >= len(m.input) {
 		return false, 0
 	}
-	if len(in.Props) == 0 && len(in.RuneRanges) == 0 && !in.Fold {
-		if classMatch(in, m.input[sp]) {
+	runeAware := len(in.Props) != 0 || len(in.RuneRanges) != 0 || in.Fold
+	if m.prog.Enc == compile.ASCII8BIT {
+		// Binary mode: every class is byte-oriented and consumes one byte. A
+		// rune-aware class tests its byte ranges per byte; its code-point members
+		// (which require a multi-byte read) can never match a single byte, so a
+		// byte is accepted only by the byte ranges, then negated.
+		if !runeAware {
+			if classMatch(in, m.input[sp]) {
+				return true, 1
+			}
+			return false, 0
+		}
+		if classMatchByteRanges(in, m.input[sp]) {
 			return true, 1
+		}
+		return false, 0
+	}
+	if !runeAware {
+		// UTF8 mode, byte-oriented class: decode a code point and test it against
+		// the byte ranges as code-point bounds, advancing the whole code point.
+		if isContinuationByte(m.input[sp]) {
+			return false, 0
+		}
+		r, w := utf8.DecodeRuneInString(m.input[sp:])
+		if rangesContainRune(in.Ranges, r) != in.Negate {
+			return true, w
 		}
 		return false, 0
 	}
@@ -816,11 +891,49 @@ func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 	return false, 0
 }
 
+// classMatchByteRanges reports whether byte b falls in any of a class's byte
+// ranges, applying the class's own Negate. It is the ASCII8BIT-mode test for a
+// rune-aware class: its code-point members cannot match a single byte, so only
+// the byte ranges (then negation) decide.
+func classMatchByteRanges(in compile.Inst, b byte) bool {
+	return rangesContain(in.Ranges, b) != in.Negate
+}
+
+// rangesContainRune reports whether code point r falls in any of the inclusive
+// byte ranges, whose bounds (from byte syntax) are ASCII and so are interpreted
+// as code points. A multi-byte code point therefore matches only a range whose
+// upper bound it does not exceed — never an ASCII-only range.
+func rangesContainRune(ranges []ast.ClassRange, r rune) bool {
+	for _, rg := range ranges {
+		if r >= rune(rg.Lo) && r <= rune(rg.Hi) {
+			return true
+		}
+	}
+	return false
+}
+
 // propStep reports whether the OpUniProp instruction in matches the code point
 // at position sp and, if so, its byte length. It returns ok=false at end of
 // input.
 func (m *machine) propStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) || isContinuationByte(m.input[sp]) {
+	if sp >= len(m.input) {
+		return false, 0
+	}
+	if m.prog.Enc == compile.ASCII8BIT {
+		// Binary mode: a property is ASCII-only and tests the single input byte,
+		// advancing one byte. A high byte (0x80–0xFF) is a lone byte belonging to no
+		// property — it must NOT be interpreted as the Latin-1 code point of the
+		// same value (e.g. 0xC3 is not a word character in /n, unlike U+00C3), so
+		// membership is consulted only for ASCII bytes and the member-local Negate
+		// is applied last, exactly as MRI does on an ASCII-8BIT string.
+		b := m.input[sp]
+		inSet := b < 0x80 && charset.Match(in.Prop.Name, false, rune(b))
+		if inSet != in.Prop.Negate {
+			return true, 1
+		}
+		return false, 0
+	}
+	if isContinuationByte(m.input[sp]) {
 		return false, 0
 	}
 	r, w := utf8.DecodeRuneInString(m.input[sp:])

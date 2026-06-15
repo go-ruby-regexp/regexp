@@ -79,11 +79,24 @@ It is the regexp backend for
 > **rune-aware** atoms: each decodes one UTF-8 code point and advances by its byte
 > length (a `\p{…}` member, or `/i`, also makes the enclosing character class
 > rune-aware). Folding is **simple (1:1)** only — full/special folding (`ß`→`ss`,
-> Turkish dotless-i) is out of scope. Everything else is **byte-oriented** and
-> byte-exact, and match offsets are **byte** offsets (MRI reports character
-> offsets, so the engines agree on matched text but not on the numeric span on
-> multi-byte input); a rune-aware atom never matches at a UTF-8 continuation byte
-> and is rejected inside a fixed-width lookbehind.
+> Turkish dotless-i) is out of scope. Match offsets are **byte** offsets (MRI
+> reports character offsets, so the engines agree on matched text but not on the
+> numeric span on multi-byte input); a rune-aware atom never matches at a UTF-8
+> continuation byte and is rejected inside a fixed-width lookbehind.
+>
+> **Multi-encoding (`Regexp#encoding`).** A `Regexp` carries a first-class
+> encoding (`re.Encoding()`), the way Ruby's `Regexp#encoding` governs matching on
+> a UTF-8 versus a binary string. In the default **`UTF8`** mode the dot `.` and a
+> byte-oriented class advance by a **whole UTF-8 code point**, so `/./` matches a
+> complete multi-byte character (`/./` on `"é"` consumes `"é"`, and `[^a]` consumes
+> a whole character — exactly as MRI; a positive ASCII range like `[a-z]` still
+> fails on a multi-byte character). In **`ASCII8BIT`** mode (Ruby's binary `/n`,
+> via `CompileEnc(pattern, ASCII8BIT)`) every atom advances **one byte** and `/i`
+> folding and `\p{…}` operate per byte, ASCII-only. A bare `.`/byte-class inside a
+> fixed-width lookbehind has variable byte width (1..4) in `UTF8` mode and the
+> candidate-position scan finds the character-aligned start, so `(?<=.)x` matches.
+> Literal multi-byte class members (`[é]`, `[à-ï]`) and encodings beyond UTF-8 /
+> ASCII-8BIT are follow-ups.
 >
 > **Subexpression calls (`\g<…>`).** `\g<name>`, `\g<n>`, relative `\g<+n>` /
 > `\g<-n>`, and `\g<0>` (whole-pattern recursion) **re-run and re-capture** the

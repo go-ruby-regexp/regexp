@@ -281,8 +281,40 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   generalised for this: a class is rune-aware when it carries a `\p{…}` member,
   an explicit code-point range, *or* is folded under `/i`.)
 
-  Still to come in Phase 3: multi-encoding support (the rune-level `/i`
-  case-folding above is now done for literals and classes).
+  **Multi-encoding — first slice (UTF-8 char-advance + binary mode)** ✅ *done* —
+  the `Regexp` now carries a first-class **encoding** (`re.Encoding()`,
+  `CompileEnc(pattern, enc)`), matching how Ruby's `Regexp#encoding` governs
+  matching on a UTF-8 versus a binary string. In the default **UTF8** mode the
+  dot `.` and a **byte-oriented character class** advance by a whole UTF-8 code
+  point: `/./` matches a complete multi-byte character (`/./` on `"é"` consumes
+  `"é"`, not just its lead byte — the engine's original byte-oriented `.` was the
+  documented limitation), and `[^a]` consumes a whole character, exactly as MRI
+  does on a UTF-8 string; a positive ASCII range such as `[a-z]` still fails on a
+  multi-byte character (its code point exceeds the range). In **ASCII8BIT** mode
+  (Ruby's binary `/n`) every atom — including the rune-aware ones — advances a
+  single **byte**, and `/i` folding and `\p{…}` operate per byte, ASCII-only
+  (a high byte `0x80`–`0xFF` belongs to no property and folds to nothing). Match
+  offsets stay byte offsets in both modes. Like MRI, which positions only at
+  character boundaries, the dot and a byte-oriented class **never start a match at
+  a UTF-8 continuation byte** in UTF8 mode, so the only match offset is
+  code-point-aligned. The lookbehind width model is generalised: in UTF8 mode a
+  bare `.` or a byte-oriented class inside a fixed-width lookbehind has a
+  **bounded** byte width `1..4`, and the candidate-position scan enumerates the
+  alignments (a candidate landing mid-character simply fails), so a lookbehind
+  over a multi-byte character works (`(?<=.)x` matches the `x` after `"é"`). The
+  byte-oriented start-position/interior-literal prefilters stay sound (a
+  first-byte set is still a *necessary* condition regardless of how many bytes the
+  atom then consumes), proven by the unchanged brute-force-vs-prefilter
+  equivalence test and the MRI differential corpus (extended with multi-byte
+  `.`/class cases, compared by matched substring). An invalid UTF-8 lead byte
+  decodes leniently as the replacement rune (width 1) rather than raising as MRI
+  does — a documented divergence.
+
+  Still to come in multi-encoding: **literal multi-byte character-class members**
+  (`[é]`, `[à-ï]` — these still parse as raw bytes, a pre-existing
+  representation gap that needs the parser to emit code-point class members), and
+  **per-encoding cursors beyond UTF-8 / ASCII-8BIT** (UTF-16/32, EUC, Shift_JIS),
+  each its own increment.
 - **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
   wall-clock timeout), optimizer (✅ start-position prefilter: anchors, literal
   prefixes, first-byte sets, alternation-aware; ✅ required-interior-literal
@@ -366,12 +398,12 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   amortizes the clock read to noise; the same poll runs inside the lookaround
   sub-VM. A pathological pattern is then bounded by whichever of the budget or the
   deadline it reaches first. Still to come in Phase 4: further optimizer passes
-  and broader benchmarks; the remaining big-ticket item is Phase 3's
-  multi-encoding support (the engine is byte-oriented with documented rune-aware
-  atoms — `OpFoldChar`, `OpUniProp`, rune-aware `OpClass` — operating on UTF-8;
-  generalising the cursor to other Onigmo encodings, e.g. ASCII-8BIT/binary,
-  UTF-16/32, EUC/Shift_JIS, is scoped as its own phase because it touches every
-  input-advancing atom and the offset model).
+  and broader benchmarks. Phase 3's multi-encoding support has had its first slice
+  landed (UTF-8 char-advancing `.`/byte-class + an ASCII-8BIT/binary mode, with
+  the `Regexp` carrying its encoding); the remaining encoding increments — literal
+  multi-byte class members and cursors for UTF-16/32, EUC and Shift_JIS — are
+  scoped above under Phase 3, each touching the input-advancing atoms and the
+  offset model.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
   adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
 
@@ -381,8 +413,9 @@ maps Ruby's `Regexp`/`MatchData` onto this.
    backreferences and the leftmost-first semantics require it. *Settled.*
 2. **Standalone module** — usable by any Go program, not just the Ruby runtime.
    *Settled.*
-3. **Encodings** — byte-oriented core with an encoding abstraction; UTF-8 and
-   ASCII-8BIT first.
+3. **Encodings** — byte-oriented core with an encoding abstraction; UTF-8
+   (default, `.`/byte-class advance a whole code point) and ASCII-8BIT/binary
+   (every atom one byte) are in. *First slice settled.*
 4. **ReDoS** — memoization + deterministic budget/timeout from Phase 4; never
    rely on the host watchdog alone.
 

@@ -45,6 +45,21 @@ import (
 // failures wrap it so callers can test with errors.Is.
 var ErrSyntax = errors.New("syntax error")
 
+// Encoding selects how the byte-oriented input-advancing atoms traverse the
+// input. It is fixed at parse time because it governs the byte-width validation
+// of a fixed-width lookbehind: in UTF8 mode the dot and a byte-oriented class
+// match a whole code point (a variable byte width, 1..utf8.UTFMax), whereas in
+// ASCII8BIT (binary, Ruby /n) mode every atom is exactly one byte.
+type Encoding int
+
+const (
+	// UTF8 is the default encoding: the dot and byte-oriented classes span a
+	// whole UTF-8 code point.
+	UTF8 Encoding = iota
+	// ASCII8BIT is Ruby's binary (/n) encoding: every atom is one byte.
+	ASCII8BIT
+)
+
 // Result is the outcome of parsing a pattern: the AST root, the number of
 // capturing groups, and the name→index map for named captures.
 type Result struct {
@@ -84,12 +99,21 @@ type parser struct {
 	maxBackref int           // largest numeric backreference seen, validated after parsing
 	calls      []pendingCall // \g<name>/\g<n> references awaiting post-parse resolution
 	flags      flags         // inline option state at the cursor (e.g. /i via (?i))
+	enc        Encoding      // input encoding, governing lookbehind byte-width validation
 }
 
-// Parse compiles a pattern string into an AST. It returns an error wrapping
-// ErrSyntax when the pattern is malformed.
+// Parse compiles a pattern string into an AST in the default UTF-8 encoding. It
+// returns an error wrapping ErrSyntax when the pattern is malformed.
 func Parse(pattern string) (Result, error) {
-	p := &parser{src: pattern, names: map[string]int{}}
+	return ParseEnc(pattern, UTF8)
+}
+
+// ParseEnc is Parse with an explicit input encoding (see Encoding). The encoding
+// only affects the byte-width validation of a fixed-width lookbehind body, where
+// the dot and a byte-oriented class span a whole code point under UTF8 but one
+// byte under ASCII8BIT.
+func ParseEnc(pattern string, enc Encoding) (Result, error) {
+	p := &parser{src: pattern, names: map[string]int{}, enc: enc}
 	node, err := p.parseAlternate()
 	if err != nil {
 		return Result{}, err
@@ -705,21 +729,24 @@ func (p *parser) parseLook(behind, negate bool) (ast.Node, error) {
 		// constant byte width (alternatives may differ from one another, e.g.
 		// (?<=ab|c), but no single branch may vary in length). Backreferences
 		// and unbounded or {m,n} (m != n) quantifiers are therefore rejected.
-		if !fixedWidth(sub) {
+		if !p.fixedWidth(sub) {
 			return nil, p.errorf("variable-width lookbehind is not supported")
 		}
-		min, max := widthRange(sub)
+		min, max := p.widthRange(sub)
 		look.Min, look.Max = min, max
 	}
 	return look, nil
 }
 
-// fixedWidth reports whether every alternative inside n matches a constant
-// number of bytes, which is the condition Onigmo imposes on lookbehind bodies.
-// Different alternatives may have different (constant) widths; only intra-branch
-// variation — unbounded or {m,n} (m != n) quantifiers, and backreferences whose
-// width is data-dependent — is disqualifying.
-func fixedWidth(n ast.Node) bool {
+// fixedWidth reports whether every alternative inside n matches a bounded number
+// of bytes, the condition that lets a lookbehind try a finite set of candidate
+// start positions. Different alternatives may have different widths; only
+// data-dependent or unbounded variation — backreferences, calls, and unbounded
+// or {m,n} (m != n) quantifiers — is disqualifying. In UTF8 mode the dot and a
+// byte-oriented class span a whole code point (a bounded 1..utf8.UTFMax byte
+// width), which the candidate-position loop enumerates; in ASCII8BIT mode they
+// are exactly one byte.
+func (p *parser) fixedWidth(n ast.Node) bool {
 	switch t := n.(type) {
 	case *ast.Backref:
 		// Width depends on captured text at match time.
@@ -737,21 +764,21 @@ func fixedWidth(n ast.Node) bool {
 		// fixed-width. Mirror that by disqualifying it here.
 		return false
 	case *ast.Group:
-		return fixedWidth(t.Sub)
+		return p.fixedWidth(t.Sub)
 	case *ast.Concat:
 		for _, s := range t.Subs {
-			if !fixedWidth(s) {
+			if !p.fixedWidth(s) {
 				return false
 			}
 		}
 	case *ast.Alternate:
 		for _, s := range t.Subs {
-			if !fixedWidth(s) {
+			if !p.fixedWidth(s) {
 				return false
 			}
 		}
 	case *ast.Star:
-		return t.Min == t.Max && fixedWidth(t.Sub)
+		return t.Min == t.Max && p.fixedWidth(t.Sub)
 	case *ast.UnicodeProp:
 		// A property matches one code point, whose UTF-8 byte width varies, so a
 		// lookbehind whose width must be a compile-time constant cannot contain it.
@@ -775,18 +802,28 @@ func fixedWidth(n ast.Node) bool {
 
 // widthRange computes the minimum and maximum number of bytes n can match. It is
 // only called on lookbehind bodies that fixedWidth has already accepted, so the
-// width is always finite.
-func widthRange(n ast.Node) (min, max int) {
+// width is always finite. In UTF8 mode the dot and a byte-oriented class span a
+// whole code point, so their byte width ranges over 1..utf8.UTFMax and the
+// lookbehind candidate-position loop enumerates every alignment (a candidate that
+// lands inside a multi-byte sequence simply fails); in ASCII8BIT mode they are
+// exactly one byte. A Literal is always one byte (a multi-byte source character
+// lowers to one Literal per UTF-8 byte, so its total width is already exact).
+func (p *parser) widthRange(n ast.Node) (min, max int) {
 	switch t := n.(type) {
 	case *ast.Empty, *ast.Anchor, *ast.Look:
 		return 0, 0
-	case *ast.Literal, *ast.AnyChar, *ast.Class:
+	case *ast.Literal:
 		return 1, 1
+	case *ast.AnyChar, *ast.Class:
+		if p.enc == ASCII8BIT {
+			return 1, 1
+		}
+		return 1, utf8.UTFMax
 	case *ast.Group:
-		return widthRange(t.Sub)
+		return p.widthRange(t.Sub)
 	case *ast.Concat:
 		for _, s := range t.Subs {
-			smin, smax := widthRange(s)
+			smin, smax := p.widthRange(s)
 			min += smin
 			max += smax
 		}
@@ -794,7 +831,7 @@ func widthRange(n ast.Node) (min, max int) {
 	case *ast.Alternate:
 		min = -1
 		for _, s := range t.Subs {
-			smin, smax := widthRange(s)
+			smin, smax := p.widthRange(s)
 			if min == -1 || smin < min {
 				min = smin
 			}
@@ -805,7 +842,7 @@ func widthRange(n ast.Node) (min, max int) {
 		return min, max
 	default: // *ast.Star with Min == Max
 		s := n.(*ast.Star)
-		smin, smax := widthRange(s.Sub)
+		smin, smax := p.widthRange(s.Sub)
 		return smin * s.Min, smax * s.Max
 	}
 }

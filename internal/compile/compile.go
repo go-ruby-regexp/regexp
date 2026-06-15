@@ -7,6 +7,31 @@ import (
 	"github.com/go-onigmo/regexp/internal/syntax"
 )
 
+// Encoding selects how the byte-oriented input-advancing atoms — the dot
+// (OpAny) and a byte-oriented character class (OpClass without a \p{…} member,
+// code-point range, or /i fold) — traverse the input. It is the same type the
+// parser uses (it governs lookbehind byte-width validation there).
+//
+// In UTF8 mode (the default, matching Ruby's behaviour on a UTF-8 string) these
+// atoms decode one full UTF-8 code point and advance by its byte length, so the
+// dot matches a whole multi-byte character (`/./` on "é" consumes "é", as MRI
+// does). In ASCII8BIT mode (Ruby's /n binary encoding) every atom advances a
+// single byte, so the dot consumes one byte of a multi-byte sequence — the
+// engine's original byte-oriented behaviour. The rune-aware atoms (OpFoldChar,
+// OpUniProp, and a rune-aware OpClass) always decode a code point in UTF8 mode
+// and are forced to a single byte in ASCII8BIT mode (where Unicode folding and
+// properties operate per byte, ASCII-only). Match offsets are byte offsets in
+// both modes.
+type Encoding = syntax.Encoding
+
+const (
+	// UTF8 is the default encoding: the dot and byte-oriented classes advance by
+	// a whole UTF-8 code point.
+	UTF8 = syntax.UTF8
+	// ASCII8BIT is Ruby's binary (/n) encoding: every atom advances one byte.
+	ASCII8BIT = syntax.ASCII8BIT
+)
+
 // Op is the opcode of a VM instruction.
 type Op int
 
@@ -129,6 +154,10 @@ type Program struct {
 	Names      map[string]int
 	HasBackref bool
 	HasCall    bool
+	// Enc is the input encoding (UTF8 by default, ASCII8BIT for binary /n). It
+	// governs how the dot and byte-oriented classes advance: by a whole code
+	// point in UTF8 mode, by one byte in ASCII8BIT mode.
+	Enc Encoding
 }
 
 // NumSlots returns the number of save slots the VM must allocate (two per
@@ -159,10 +188,17 @@ func (b *builder) emit(in Inst) int {
 	return len(b.insts) - 1
 }
 
-// Compile turns a parse result into an executable program. It wraps the whole
-// pattern in save slots 0/1 (the overall match span) and terminates with
-// OpMatch.
+// Compile turns a parse result into an executable program in the default UTF-8
+// encoding. It wraps the whole pattern in save slots 0/1 (the overall match
+// span) and terminates with OpMatch.
 func Compile(r syntax.Result) *Program {
+	return CompileEnc(r, UTF8)
+}
+
+// CompileEnc is Compile with an explicit input encoding (see Encoding). UTF8
+// makes the dot and byte-oriented classes advance by a whole code point;
+// ASCII8BIT makes every atom advance one byte.
+func CompileEnc(r syntax.Result, enc Encoding) *Program {
 	b := &builder{entry: map[int]int{}}
 	b.emit(Inst{Op: OpSave, Slot: 0})
 	// Group 0's callable sub-program (the target of \g<0>) is the whole pattern,
@@ -189,7 +225,7 @@ func Compile(r syntax.Result) *Program {
 			hasCall = true
 		}
 	}
-	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref, HasCall: hasCall}
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref, HasCall: hasCall, Enc: enc}
 }
 
 // node compiles one AST node, appending its instructions.

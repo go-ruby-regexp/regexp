@@ -412,6 +412,35 @@ var diffUnicodeCorpus = []rubyCase{
 	{`(?i)Ωμέγα`, "ωμέγα"}, // a whole folded Greek word
 	{`(?i)Δ+`, "δδΔx"},
 	{`(?i)(é)`, "É"}, // captured folded literal
+
+	// Multi-encoding (Phase 3): in the default UTF-8 mode the dot and a
+	// byte-oriented class advance by a whole code point, so `.` matches a complete
+	// multi-byte character and a negated byte class consumes one whole character,
+	// exactly as MRI does on a UTF-8 string. A positive ASCII range still fails on
+	// a multi-byte character (its code point exceeds the range). These are compared
+	// by matched substring because MRI reports character offsets and this engine
+	// byte offsets, but the matched text is identical.
+	{`.`, "é"},
+	{`.`, "中"},
+	{`.+`, "héllo"},
+	{`a.c`, "aéc"},
+	{`a.c`, "a中c"},
+	{`.{2}`, "éé"},
+	{`[^a]`, "éx"},
+	{`[^a]+`, "héllo"},
+	{`[^x]`, "中x"},
+	{`[a-z]`, "é"}, // no match: é is not in the ASCII range
+	{`(.)(.)`, "éx"},
+	{`x.y`, "x→y"}, // dot spans the 3-byte arrow
+	// (The dot's newline exclusion under UTF-8 and the dot-all /m behaviour are
+	// asserted by the oracle-independent unit tests in phase3_encoding_test.go;
+	// a pure-newline input is unreliable to pass through the ruby -e arg shell.)
+	// A byte-oriented class inside a fixed-width lookbehind: its byte width is now
+	// variable (1..4) in UTF-8 mode, but the candidate-position scan finds the
+	// character-aligned start, matching MRI's character-width lookbehind.
+	{`(?<=.)x`, "éx"},
+	{`(?<=a.)c`, "aéc"},
+	{`(?<=[^q])z`, "中z"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

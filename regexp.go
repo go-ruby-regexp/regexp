@@ -21,15 +21,47 @@ type Regexp struct {
 	timeout time.Duration
 }
 
-// Compile parses a pattern and returns a compiled Regexp, or an error if the
-// pattern is malformed.
+// Encoding selects how the byte-oriented input-advancing atoms — the dot (`.`)
+// and a byte-oriented character class — traverse the input, the way Ruby's
+// Regexp#encoding governs matching on a UTF-8 vs a binary (ASCII-8BIT) string.
+//
+// In UTF8 (the default) the dot and byte-oriented classes advance by a whole
+// UTF-8 code point, so `/./` matches a complete multi-byte character (it matches
+// "é" as one unit, exactly as MRI does on a UTF-8 string) and `[^a]` consumes a
+// whole character rather than a single byte. In ASCII8BIT (Ruby's /n binary
+// encoding) every atom advances one byte, and Unicode case-folding (/i) and
+// \p{…} properties operate per byte (ASCII-only). Match offsets are byte offsets
+// in both modes.
+type Encoding = compile.Encoding
+
+const (
+	// UTF8 is the default encoding: the dot and byte-oriented classes advance by
+	// a whole UTF-8 code point.
+	UTF8 = compile.UTF8
+	// ASCII8BIT is Ruby's binary (/n) encoding: every atom advances one byte.
+	ASCII8BIT = compile.ASCII8BIT
+)
+
+// Compile parses a pattern and returns a compiled Regexp in the default UTF-8
+// encoding, or an error if the pattern is malformed.
 func Compile(pattern string) (*Regexp, error) {
-	res, err := syntax.Parse(pattern)
+	return CompileEnc(pattern, UTF8)
+}
+
+// CompileEnc is Compile with an explicit input encoding (see Encoding). UTF8
+// makes the dot and byte-oriented classes advance by a whole code point;
+// ASCII8BIT makes every atom advance one byte, matching Ruby's /n.
+func CompileEnc(pattern string, enc Encoding) (*Regexp, error) {
+	res, err := syntax.ParseEnc(pattern, enc)
 	if err != nil {
 		return nil, err
 	}
-	return &Regexp{prog: compile.Compile(res), source: pattern}, nil
+	return &Regexp{prog: compile.CompileEnc(res, enc), source: pattern}, nil
 }
+
+// Encoding returns the input encoding the Regexp matches under (Ruby's
+// Regexp#encoding equivalent): UTF8 by default, ASCII8BIT for a binary pattern.
+func (re *Regexp) Encoding() Encoding { return re.prog.Enc }
 
 // String returns the source pattern the Regexp was compiled from.
 func (re *Regexp) String() string { return re.source }
