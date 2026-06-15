@@ -178,6 +178,19 @@ type Call struct {
 	Index int
 }
 
+// Atomic is an atomic (possessive) group (?>…). Its sub-pattern is matched once
+// and then committed: every backtrack point created while matching Sub is
+// discarded the moment Sub succeeds, so the engine never re-tries an alternate
+// sub-match or a shorter repetition to make the rest of the pattern succeed. It
+// is the non-backtrackable barrier shared with the possessive quantifiers: the
+// parser lowers X*+ / X++ / X?+ / X{m,n}+ to an Atomic wrapping the equivalent
+// greedy quantifier (X*+ is exactly (?>X*)), so both forms run on one mechanism.
+// Captures made inside an atomic group persist (their most recent binding wins),
+// exactly as in Onigmo/Ruby.
+type Atomic struct {
+	Sub Node
+}
+
 // Look is a zero-width lookaround assertion. Behind selects lookbehind over
 // lookahead, and Negate selects the negative form. Sub is the sub-pattern run
 // at (lookahead) or ending at (lookbehind) the current position; the outer
@@ -205,5 +218,6 @@ func (*Star) isNode()        {}
 func (*Group) isNode()       {}
 func (*Backref) isNode()     {}
 func (*Call) isNode()        {}
+func (*Atomic) isNode()      {}
 func (*Look) isNode()        {}
 func (*Empty) isNode()       {}

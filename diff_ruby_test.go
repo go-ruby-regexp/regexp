@@ -258,6 +258,49 @@ var diffCorpus = []rubyCase{
 	{`(a*)*?b`, "aaab"},
 	{`(a*)*?b`, "aaac"},
 	{`\d+?`, "12345"},
+
+	// Possessive quantifiers *+ ++ ?+ {m,n}+ and atomic groups (?>…) (this
+	// increment). Both rest on the atomic-cut barrier: once the sub-pattern
+	// matches, the backtrack points it created are discarded, so the engine never
+	// gives back to make the rest of the pattern succeed. These are stable,
+	// long-standing Onigmo features, so the exact-span oracle applies.
+	{`a++`, "aaa"},                  // possessive eats all a's
+	{`a++a`, "aaa"},                 // and refuses to give one back: no match
+	{`a*+`, "aaa"},                  // possessive star
+	{`a*+a`, "aaa"},                 // no give-back: no match
+	{`a?+`, "a"},                    // possessive optional
+	{`a?+a`, "aa"},                  // possessive ? keeps its one a
+	{`a?+a`, "a"},                   // nothing left for the trailing a: no match
+	{`a{2,3}+`, "aaaa"},             // {m,n}+ is a stacked + on the braced repeat: (a{2,3})+
+	{`a{2,3}+a`, "aaaa"},            // with a follower it gives back so the literal a matches
+	{`a{2,3}+a`, "aaa"},             // gives back to 2, literal takes the 3rd
+	{`a{2,3}+a`, "aa"},              // only two a's: no match
+	{`\d++\.\d`, "12.3"},            // possessive then a literal it does not eat
+	{`\d++`, "123abc"},              // possessive digits
+	{`[a-c]++d`, "abcd"},            // possessive class
+	{`a++b`, "aaab"},                // possessive then a distinct literal
+	{`(?>a+)`, "aaa"},               // atomic group
+	{`(?>a+)a`, "aaa"},              // atomic commits: no give-back, no match
+	{`(?>a*)b`, "aaab"},             // atomic star then b
+	{`(?>a*)b`, "b"},                // zero repetitions, then b
+	{`x(?>a*)`, "xaaa"},             // atomic at end of pattern
+	{`(?>a|ab)c`, "abc"},            // atomic alternation commits to first: no match
+	{`(?:a|ab)c`, "abc"},            // (contrast) non-atomic backtracks and matches
+	{`(?>a+)+b`, "aaab"},            // nested atomic under a greedy +
+	{`(?>a*)*b`, "aaab"},            // atomic star under a greedy star
+	{`(?>(a+))(b)`, "aaab"},         // captures inside an atomic group persist
+	{`((?>a+))a`, "aaa"},            // atomic group inside a capture: no give-back
+	{`(?>(a)|(ab))(c)`, "abc"},      // atomic alternation with captures: no match
+	{`(a)++`, "aaa"},                // possessive over a capture: last binding wins
+	{`(a)*+`, "aaa"},                // possessive star over a capture
+	{`(ab)++`, "ababab"},            // possessive over a multi-char capture
+	{`(a|b)*+c`, "abc"},             // possessive over an alternation, last wins
+	{`((a)|(b))++`, "ab"},           // nested captures under a possessive
+	{`(?>a+?)b`, "aaab"},            // atomic over a lazy body: commits to the minimum
+	{`(?>a??)a`, "aa"},              // atomic over a lazy optional: commits to zero
+	{`(?>)a`, "a"},                  // empty atomic group is a no-op
+	{`(?=(\d)\g<1>)\d+`, "12x"},     // atomic-cut machinery alongside a \g<…> call
+	{`x(?>a*)+y`, "xaaay"},          // possessive-style nesting still terminates
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

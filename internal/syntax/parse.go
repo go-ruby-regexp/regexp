@@ -259,59 +259,126 @@ func (p *parser) parseTerm() (ast.Node, error) {
 	return p.parseQuantifier(atom)
 }
 
-// parseQuantifier applies a trailing *, +, ?, or {m,n} to atom, if present. In
-// extended mode the insignificant whitespace/comments between the atom and a
-// following quantifier are ignored, so e.g. /(?x)a *$/ applies * to a.
+// quantMod is the matching-preference modifier that may trail a quantifier: the
+// default greedy form, the non-greedy/lazy form (a trailing '?'), or the
+// possessive form (a trailing '+').
+type quantMod int
+
+const (
+	modGreedy     quantMod = iota // longest first, gives back on backtrack (a*)
+	modLazy                       // shortest first, takes more only when forced (a*?)
+	modPossessive                 // greedy then committed: no give-back at all (a*+)
+)
+
+// parseQuantifier applies trailing quantifiers to atom. A single quantifier is
+// *, +, ?, or {m,n}; Onigmo also accepts a quantifier stacked on a quantifier
+// (e.g. a**, a+++, a{2}*), so after building one this loops to apply any further
+// quantifier to the result. In extended mode the insignificant
+// whitespace/comments between the atom and a following quantifier are ignored,
+// so e.g. /(?x)a *$/ applies * to a.
 func (p *parser) parseQuantifier(atom ast.Node) (ast.Node, error) {
+	for {
+		p.skipExtended()
+		if p.eof() {
+			return atom, nil
+		}
+		var next ast.Node
+		var err error
+		switch p.peek() {
+		case '*':
+			p.next()
+			next = p.quantify(atom, 0, -1)
+		case '+':
+			p.next()
+			next = p.quantify(atom, 1, -1)
+		case '?':
+			p.next()
+			next = p.quantify(atom, 0, 1)
+		case '{':
+			var matched bool
+			next, matched, err = p.parseBrace(atom)
+			if err != nil {
+				return nil, err
+			}
+			if !matched {
+				// The '{' was not a valid repetition: it is a literal brace, a fresh
+				// term that does not bind to atom. parseBrace left the cursor at the
+				// '{' so the outer parseConcat re-reads it as a literal; the stacking
+				// loop ends, returning what was quantified so far.
+				return atom, nil
+			}
+		default:
+			return atom, nil
+		}
+		atom = next
+	}
+}
+
+// quantify builds the node for one of the bare quantifiers * + ? over atom with
+// bounds [min,max], reading its trailing greedy/lazy/possessive modifier. The
+// greedy and lazy forms are a single Star; the possessive form (a*+, a++, a?+)
+// is lowered to an atomic group wrapping the equivalent greedy quantifier — a*+
+// is exactly (?>a*) — so the possessives and (?>…) share one VM mechanism.
+//
+// The possessive modifier is read only for these single-character quantifiers.
+// A '+' after a {m,n} brace is, in Onigmo, a *stacked* greedy quantifier on the
+// braced repeat (it warns "redundant nested repeat operator" and the repeat
+// still gives back), not a possessive; so parseBrace deliberately does not read
+// a modifier and the trailing '+' is picked up by parseQuantifier's stacking
+// loop instead, matching MRI exactly.
+func (p *parser) quantify(atom ast.Node, min, max int) ast.Node {
+	switch p.quantMod() {
+	case modLazy:
+		return &ast.Star{Sub: atom, Min: min, Max: max, Greedy: false}
+	case modPossessive:
+		return &ast.Atomic{Sub: &ast.Star{Sub: atom, Min: min, Max: max, Greedy: true}}
+	default:
+		return &ast.Star{Sub: atom, Min: min, Max: max, Greedy: true}
+	}
+}
+
+// quantMod reads the optional modifier that may directly follow a *, +, or ?
+// quantifier: a trailing '?' makes it non-greedy (lazy: a*?, a+?, a??) and a
+// trailing '+' makes it possessive (a*+, a++, a?+); with no modifier the
+// quantifier is greedy. The modifier byte is consumed only when present. In
+// extended mode insignificant whitespace between the quantifier and the modifier
+// is skipped first, as Onigmo does.
+func (p *parser) quantMod() quantMod {
 	p.skipExtended()
 	if p.eof() {
-		return atom, nil
+		return modGreedy
 	}
 	switch p.peek() {
-	case '*':
-		p.next()
-		return &ast.Star{Sub: atom, Min: 0, Max: -1, Greedy: p.quantGreedy()}, nil
-	case '+':
-		p.next()
-		return &ast.Star{Sub: atom, Min: 1, Max: -1, Greedy: p.quantGreedy()}, nil
 	case '?':
 		p.next()
-		return &ast.Star{Sub: atom, Min: 0, Max: 1, Greedy: p.quantGreedy()}, nil
-	case '{':
-		return p.parseBrace(atom)
-	default:
-		return atom, nil
-	}
-}
-
-// quantGreedy reads the optional modifier that may follow a quantifier and
-// reports whether the quantifier is greedy. A trailing '?' makes it non-greedy
-// (lazy: a*?, a+?, a??, a{m,n}?), which this consumes and reports as false; with
-// no modifier the quantifier is greedy and nothing is consumed. In extended mode
-// insignificant whitespace between the quantifier and the modifier is skipped
-// first, as Onigmo does. (The possessive modifier '+' is a later increment; until
-// then a trailing '+' is left in place and surfaces as a "nothing to repeat"
-// error, matching the engine's current behaviour.)
-func (p *parser) quantGreedy() bool {
-	p.skipExtended()
-	if !p.eof() && p.peek() == '?' {
+		return modLazy
+	case '+':
 		p.next()
-		return false
+		return modPossessive
+	default:
+		return modGreedy
 	}
-	return true
 }
 
-// parseBrace parses a {m}, {m,}, or {m,n} repetition. A '{' that is not a valid
-// repetition is treated as a literal brace, matching Ruby's behaviour.
-func (p *parser) parseBrace(atom ast.Node) (ast.Node, error) {
+// parseBrace parses a {m}, {m,}, or {m,n} repetition over atom. A '{' that is
+// not a valid repetition is treated as a literal brace, matching Ruby's
+// behaviour; matched reports whether a real repetition was parsed (false means
+// the returned node is a literal '{' that does not bind to atom).
+//
+// Only the lazy '?' modifier is read here ({m,n}? is non-greedy). A trailing '+'
+// is NOT consumed as a possessive: in Onigmo a '+' after a brace is a stacked
+// greedy quantifier on the braced repeat — it warns "redundant nested repeat
+// operator" and the repeat still gives back — so it is left for parseQuantifier's
+// stacking loop to apply, matching MRI exactly (e.g. a{2,3}+a matches "aaa").
+func (p *parser) parseBrace(atom ast.Node) (ast.Node, bool, error) {
 	start := p.pos
 	p.next() // consume '{'
 	min, okMin := p.parseInt()
 	if !okMin {
-		// Not a count: treat '{' as a literal.
+		// Not a count: treat '{' as a literal. Leave the cursor at the '{' so the
+		// outer parser re-reads it as a literal term.
 		p.pos = start
-		p.next()
-		return &ast.Literal{B: '{'}, nil
+		return nil, false, nil
 	}
 	max := min
 	if !p.eof() && p.peek() == ',' {
@@ -322,22 +389,26 @@ func (p *parser) parseBrace(atom ast.Node) (ast.Node, error) {
 			m, ok := p.parseInt()
 			if !ok {
 				p.pos = start
-				p.next()
-				return &ast.Literal{B: '{'}, nil
+				return nil, false, nil
 			}
 			max = m
 		}
 	}
 	if p.eof() || p.peek() != '}' {
 		p.pos = start
-		p.next()
-		return &ast.Literal{B: '{'}, nil
+		return nil, false, nil
 	}
 	p.next() // consume '}'
 	if max != -1 && max < min {
-		return nil, p.errorf("invalid repetition range {%d,%d}", min, max)
+		return nil, false, p.errorf("invalid repetition range {%d,%d}", min, max)
 	}
-	return &ast.Star{Sub: atom, Min: min, Max: max, Greedy: p.quantGreedy()}, nil
+	greedy := true
+	p.skipExtended()
+	if !p.eof() && p.peek() == '?' {
+		p.next()
+		greedy = false
+	}
+	return &ast.Star{Sub: atom, Min: min, Max: max, Greedy: greedy}, true, nil
 }
 
 // parseInt reads a non-negative decimal integer. It reports whether at least
@@ -422,6 +493,9 @@ func (p *parser) parseGroup() (ast.Node, error) {
 		case !p.eof() && p.peek() == ':':
 			p.next() // consume ':'
 			capture = false
+		case !p.eof() && p.peek() == '>':
+			p.next() // consume '>'
+			return p.parseAtomic()
 		case !p.eof() && p.peek() == '=':
 			p.next() // consume '='
 			return p.parseLook(false, false)
@@ -588,6 +662,26 @@ func (p *parser) parseFlagLetters() (on, off optSet, err error) {
 	return on, off, nil
 }
 
+// parseAtomic parses the body of an atomic (possessive) group (?>…) whose "(?>"
+// has already been consumed, up to and including the closing ')'. The group is
+// non-capturing; inline options set inside it are scoped to it, like any other
+// group. The resulting ast.Atomic compiles to the atomic-cut barrier (every
+// backtrack point its body creates is discarded once the body matches), which is
+// also the lowering target of the possessive quantifiers.
+func (p *parser) parseAtomic() (ast.Node, error) {
+	saved := p.flags
+	sub, err := p.parseAlternate()
+	if err != nil {
+		return nil, err
+	}
+	if p.eof() || p.peek() != ')' {
+		return nil, p.errorf("missing closing )")
+	}
+	p.next() // consume ')'
+	p.flags = saved
+	return &ast.Atomic{Sub: sub}, nil
+}
+
 // parseLook parses the body of a lookaround assertion whose introducer (one of
 // (?= (?! (?<= (?<!) has already been consumed, up to and including the closing
 // ')'. behind and negate select the variant. Lookbehind sub-patterns must have
@@ -635,6 +729,12 @@ func fixedWidth(n ast.Node) bool {
 		// width is not a compile-time constant in general (and is formally
 		// undecidable once the call is recursive). Like a backreference, it is
 		// therefore disqualified from a fixed-width lookbehind body.
+		return false
+	case *ast.Atomic:
+		// Onigmo/Ruby rejects an atomic group — and therefore any possessive
+		// quantifier, which lowers to one — anywhere in a lookbehind body ("invalid
+		// pattern in look-behind"), regardless of whether its sub-pattern is itself
+		// fixed-width. Mirror that by disqualifying it here.
 		return false
 	case *ast.Group:
 		return fixedWidth(t.Sub)

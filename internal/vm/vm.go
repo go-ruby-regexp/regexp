@@ -59,11 +59,12 @@ type slotVal struct {
 // group entered along one branch must be unwound when the search backtracks to an
 // earlier alternative.
 type thread struct {
-	pc    int
-	sp    int
-	caps  []int
-	calls []callFrame
-	openg []int
+	pc     int
+	sp     int
+	caps   []int
+	calls  []callFrame
+	openg  []int
+	atomic []int
 }
 
 // machine holds the per-search execution state.
@@ -141,6 +142,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 	sp := start
 	var calls []callFrame // pending subexpression calls (\g<…>)
 	var openg []int       // indices of groups currently open (for call save/restore)
+	var atomic []int      // backtrack-stack depths recorded by open atomic groups (?>…)
 	for {
 		if m.budget <= 0 {
 			return nil, false, ErrBudget
@@ -195,7 +197,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 			m.visited[key] = true
-			m.push(in.Y, sp, caps, calls, openg)
+			m.push(in.Y, sp, caps, calls, openg, atomic)
 			pc = in.X
 			continue
 		case compile.OpJmp:
@@ -295,6 +297,22 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 			// enclosing group's call). Fall through to the next instruction.
 			pc++
 			continue
+		case compile.OpAtomicBegin:
+			// Enter an atomic (?>…) span: remember how deep the backtrack stack is
+			// now, so its OpAtomicEnd can drop every alternative the body adds.
+			atomic = pushInt(atomic, len(m.stack))
+			pc++
+			continue
+		case compile.OpAtomicEnd:
+			// The atomic body matched: discard every backtrack point it created,
+			// committing this sub-match (no shorter repetition / alternate is ever
+			// retried). The matching OpAtomicBegin is always the most recent mark on
+			// this path, so it is the top of the atomic stack.
+			mark := atomic[len(atomic)-1]
+			atomic = atomic[:len(atomic)-1]
+			m.stack = m.stack[:mark]
+			pc++
+			continue
 		case compile.OpMatch:
 			return caps, true, nil
 		}
@@ -310,6 +328,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 		caps = t.caps
 		calls = t.calls
 		openg = t.openg
+		atomic = t.atomic
 	}
 }
 
@@ -352,6 +371,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 	var stack []thread
 	var calls []callFrame // \g<…> return frames pending inside this sub-search
 	var openg []int       // groups currently open inside this sub-search
+	var atomic []int      // open atomic-group marks inside this sub-search
 	visited := make(map[int64]bool)
 	pc := body
 	for {
@@ -406,11 +426,23 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 			visited[key] = true
 			snap := make([]int, len(caps))
 			copy(snap, caps)
-			stack = append(stack, thread{pc: in.Y, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg)})
+			stack = append(stack, thread{pc: in.Y, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg), atomic: snapshotInts(atomic)})
 			pc = in.X
 			continue
 		case compile.OpJmp:
 			pc = in.X
+			continue
+		case compile.OpAtomicBegin:
+			// Atomic (?>…) inside a lookaround body: same mechanism, scoped to this
+			// sub-search's own backtrack stack.
+			atomic = pushInt(atomic, len(stack))
+			pc++
+			continue
+		case compile.OpAtomicEnd:
+			mark := atomic[len(atomic)-1]
+			atomic = atomic[:len(atomic)-1]
+			stack = stack[:mark]
+			pc++
 			continue
 		case compile.OpCall:
 			// A subexpression call inside a lookaround body, with the same
@@ -510,6 +542,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		caps = t.caps
 		calls = t.calls
 		openg = t.openg
+		atomic = t.atomic
 	}
 }
 
@@ -532,10 +565,10 @@ func (m *machine) saveSlot(caps []int, slot, pos int) []int {
 	return nc
 }
 
-func (m *machine) push(pc, sp int, caps []int, calls []callFrame, openg []int) {
+func (m *machine) push(pc, sp int, caps []int, calls []callFrame, openg []int, atomic []int) {
 	snap := make([]int, len(caps))
 	copy(snap, caps)
-	m.stack = append(m.stack, thread{pc: pc, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg)})
+	m.stack = append(m.stack, thread{pc: pc, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg), atomic: snapshotInts(atomic)})
 }
 
 // snapshotCalls returns an independent copy of a call stack so a backtrack thread
@@ -550,6 +583,17 @@ func snapshotCalls(calls []callFrame) []callFrame {
 	snap := make([]callFrame, len(calls))
 	copy(snap, calls)
 	return snap
+}
+
+// pushInt appends v to s, copying first so a backtrack-thread snapshot that
+// shares s's backing array is not disturbed. It backs the atomic-group mark
+// stack, whose entries (backtrack-stack depths) must persist independently in
+// each thread that captured the stack before a (?>…) was entered.
+func pushInt(s []int, v int) []int {
+	nc := make([]int, len(s)+1)
+	copy(nc, s)
+	nc[len(s)] = v
+	return nc
 }
 
 // snapshotInts returns an independent copy of an int slice (the open-group stack),

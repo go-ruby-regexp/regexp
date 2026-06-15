@@ -96,9 +96,23 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   matches `aa`. They are compiled by swapping the greedy split's preferred/
   give-back branches (the loop body becomes the give-back branch and the exit the
   preferred one); the zero-width-loop guard follows a per-split `GuardTo` exit so
-  an empty lazy loop terminates regardless of branch order. Possessive
-  quantifiers (`*+`, `++`, `?+`, `{m,n}+`) and atomic groups `(?>…)` — which share
-  an atomic-cut VM mechanism — are the next increment.
+  an empty lazy loop terminates regardless of branch order.
+
+  **Possessive quantifiers (`*+`, `++`, `?+`) and atomic groups `(?>…)`** ✅
+  *done* — both rest on one **atomic-cut** barrier in the VM: a matched span is
+  *committed*, so every backtrack point created while it matched is discarded and
+  the engine never gives back a repetition or re-tries an alternate sub-match to
+  rescue the rest of the pattern. Thus `a++a` and `(?>a+)a` never match `aaa`,
+  and `(?>a|ab)c` never matches `abc`. The parser lowers each possessive to an
+  atomic group wrapping the equivalent greedy quantifier (`a*+` is exactly
+  `(?>a*)`), so a single mechanism serves both forms. A trailing `+` on a `{m,n}`
+  brace is *not* possessive but a stacked greedy repeat (`(a{2,3})+`), matching
+  Onigmo, so `a{2,3}+a` still matches `aaa`. The compiler brackets the body with
+  `OpAtomicBegin`/`OpAtomicEnd`; `OpAtomicBegin` records the backtrack-stack depth
+  and `OpAtomicEnd` truncates back to it, dropping the body's backtrack points
+  while captures made inside persist. The same cut runs inside lookaround
+  sub-searches on their isolated stacks. Atomic groups (and therefore
+  possessives) are rejected in a lookbehind body, as Onigmo requires.
 - **Phase 2** ✅ *done* — lookahead `(?=…)`/`(?!…)`, lookbehind
   `(?<=…)`/`(?<!…)`, the `\G` anchor, and subexpression calls `\g<…>`.
 

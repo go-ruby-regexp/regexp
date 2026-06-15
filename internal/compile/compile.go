@@ -72,6 +72,17 @@ const (
 	OpLook
 	// OpLookEnd marks a successful run of a lookaround sub-program.
 	OpLookEnd
+	// OpAtomicBegin opens an atomic (possessive) group (?>…): it records the
+	// current backtrack-stack depth so the matching OpAtomicEnd can discard every
+	// alternative created while the group's body matched. It is a no-op on input
+	// position; only the backtrack stack is touched.
+	OpAtomicBegin
+	// OpAtomicEnd closes an atomic group: it truncates the backtrack stack back to
+	// the depth its OpAtomicBegin recorded, dropping every backtrack point created
+	// inside the group. After this the group's sub-match is committed — the engine
+	// can never re-enter the body to try a shorter repetition or an alternate
+	// sub-match — which is exactly the possessive/atomic barrier.
+	OpAtomicEnd
 	// OpMatch reports a successful match.
 	OpMatch
 )
@@ -216,6 +227,8 @@ func (b *builder) node(n ast.Node) {
 		b.patches = append(b.patches, callSite{pc: pc, group: t.Index})
 	case *ast.Look:
 		b.look(t)
+	case *ast.Atomic:
+		b.atomic(t)
 	case *ast.Star:
 		b.repeat(t)
 	}
@@ -247,6 +260,17 @@ func (b *builder) look(l *ast.Look) {
 	b.node(l.Sub)
 	b.emit(Inst{Op: OpLookEnd})
 	b.insts[look].X = len(b.insts)
+}
+
+// atomic compiles an atomic (possessive) group (?>…): OpAtomicBegin, the body,
+// OpAtomicEnd. The pair brackets the body so that once it matches, every
+// backtrack point the body created is discarded — a non-backtrackable barrier.
+// Possessive quantifiers are lowered by the parser to an Atomic wrapping the
+// equivalent greedy quantifier, so they reuse this exact emission.
+func (b *builder) atomic(a *ast.Atomic) {
+	b.emit(Inst{Op: OpAtomicBegin})
+	b.node(a.Sub)
+	b.emit(Inst{Op: OpAtomicEnd})
 }
 
 func (b *builder) group(g *ast.Group) {

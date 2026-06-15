@@ -14,7 +14,11 @@
 // non-capturing groups, and alternation. Phase 1 adds named groups
 // (?<name>...), backreferences (\1..\9 and \k<name>), and the non-greedy (lazy)
 // quantifiers *? +? ?? {m,n}? (which match the fewest repetitions first, so
-// <.+?> matches the shortest tag). Phase 2 adds the
+// <.+?> matches the shortest tag) and the possessive quantifiers *+ ++ ?+ and
+// atomic groups (?>...) (which commit a matched span — once it matches, its
+// backtrack points are discarded, so a++a and (?>a+)a never match "aaa"; a
+// trailing + on a {m,n} brace is instead a stacked greedy repeat, as in
+// Onigmo). Phase 2 adds the
 // lookaround assertions — positive and negative lookahead (?=...) (?!...) and
 // lookbehind (?<=...) (?<!...) — and the \G anchor (which pins a match to the
 // scan start). Lookbehind bodies must be of constant width per alternative, as
