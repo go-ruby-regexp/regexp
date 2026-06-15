@@ -226,8 +226,12 @@ var diffUnicodeCorpus = []rubyCase{
 	{`[^\p{L}]+`, "héllo123x"},
 	{`(\p{Lu})(\p{Ll}+)`, "Héllo"},
 
-	// Rune-level case folding under (?i): multi-byte letters fold via simple
-	// (1:1) case folding, so a literal or class matches its Unicode case partner.
+	// Rune-level case folding under (?i): a multi-byte letter literal folds to its
+	// Unicode case partner via simple (1:1) case folding. Only literal folds are
+	// exercised here — they are stable long-standing Onigmo behaviour across MRI
+	// versions; multi-byte character-class folding is version-sensitive in MRI, so
+	// it is asserted only by the oracle-independent unit tests in
+	// phase3_runefold_test.go (which encode the correct modern behaviour).
 	{`(?i)É`, "éxy"},
 	{`(?i)é`, "ÉXY"},
 	{`(?i)café`, "CAFÉ here"},
@@ -236,14 +240,6 @@ var diffUnicodeCorpus = []rubyCase{
 	{`(?i)σ`, "ς end"},     // and the final-sigma orbit member ς
 	{`(?i)Б`, "б end"},     // Cyrillic
 	{`(?i)Ωμέγα`, "ωμέγα"}, // a whole folded Greek word
-	{`(?i)k`, "K end"},     // ASCII letter folding still works rune-aware
-	{`(?i)[é]`, "xÉy"},
-	{`(?i)[α-ω]+`, "ΑΒΓδε"}, // Greek range folds to uppercase members
-	{`(?i)[Α-Ω]+`, "αβγΔΕ"},
-	{`(?i)[Б-Я]+`, "бвгдx"},
-	{`(?i)[a-zé]+`, "ABÉcd!"}, // mixed ASCII range plus a folded multi-byte member
-	{`(?i)[^é]+`, "ÉÉxyz"},    // negated folded class skips the case partner
-	{`(?i)[é-ñ]`, "xÑy"},      // a multi-byte code-point range
 	{`(?i)Δ+`, "δδΔx"},
 	{`(?i)(é)`, "É"}, // captured folded literal
 }
