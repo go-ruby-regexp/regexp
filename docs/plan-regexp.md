@@ -313,14 +313,20 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   position for an anchor — instead of invoking the backtracking VM at every
   offset. The analysis is deliberately conservative: at the first leading atom it
   cannot reduce to bytes (the dot, a `/i`-folded or `\p{…}`-bearing class, a
-  split/alternation, a lookaround, …) it stops, and an unconstrained leading atom
-  (or a full first-byte set) leaves the prefilter unusable so the scan runs its
-  plain path. Every position the prefilter yields is still verified by the full
-  VM, so results are byte-identical to the unfiltered scan for every pattern and
-  input — proven by a brute-force-vs-prefilter equivalence test and the unchanged
-  MRI differential corpus. On a 90 KB non-matching haystack the literal-prefix
-  path is ~200× faster (16.6 µs vs 3.38 ms, 2 allocs vs 270 k) and the first-byte
-  -set path ~30× faster than the VM-at-every-offset baseline.
+  lookaround, …) it stops, and an unconstrained leading atom (or a full first
+  -byte set) leaves the prefilter unusable so the scan runs its plain path. A
+  *leading alternation* is handled too (the alternation-aware pass): the first
+  -byte sets of every branch are unioned — `foo|bar` → `{f,b}`, `[ax]|[by]` → the
+  two classes, and even `a*b` → `{a,b}` (the optional lets `a` or `b` lead) —
+  provided every branch resolves to a determinable byte and none can match empty
+  before an unconstrained atom; otherwise the union is given up. Every position
+  the prefilter yields is still verified by the full VM, so results are byte
+  -identical to the unfiltered scan for every pattern and input — proven by a
+  brute-force-vs-prefilter equivalence test and the unchanged MRI differential
+  corpus. On a 90 KB non-matching haystack the literal-prefix path is ~200×
+  faster (16.6 µs vs 3.38 ms, 2 allocs vs 270 k), the single first-byte-set path
+  ~30× faster, and the alternation first-byte set ~4× faster than the VM-at-every
+  -offset baseline.
 
   **Wall-clock timeout** ✅ *done* — a real-time deadline (Ruby's
   `Regexp.timeout` / per-pattern `timeout:` equivalent) backs up the

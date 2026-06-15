@@ -338,6 +338,14 @@ var diffCorpus = []rubyCase{
 	{`\Aquick`, "quick brown fox"},                                  // anchored, matches at 0
 	{`\Aquick`, "a quick brown fox"},                                // anchored, no match (not at 0)
 	{`a[bc]d`, "xxxabdyyy"},                                         // literal byte then class
+	// Alternation-aware first-byte set (Phase 4 optimizer pass): a leading
+	// alternation of byte-determinable branches yields the union of first bytes.
+	{`foo|bar`, "look in the bar now"},                              // alternation, second branch
+	{`foo|bar`, "look in the foo now"},                              // alternation, first branch
+	{`cat|dog|emu`, "the emu and the dog"},                          // three-way, leftmost-first
+	{`[ax]|[by]`, "qqqybbb"},                                        // alternation of byte classes
+	{`a*b`, "cccab"},                                                // leading optional: 'a' or 'b'
+	{`a*b`, "cccb"},                                                 // zero a's
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

@@ -94,8 +94,9 @@ loop:
 	for pc >= 0 && pc < len(insts) {
 		in := insts[pc]
 		switch in.Op {
-		case compile.OpSave:
-			// A capture open/close consumes no input; step over it.
+		case compile.OpSave, compile.OpAtomicBegin:
+			// A capture open/close or an atomic-group open consumes no input and does
+			// not branch; step over it to the next atom.
 			pc++
 		case compile.OpAssertBeginText:
 			// \A at the very front: only offset 0 can match.
@@ -126,6 +127,24 @@ loop:
 				break loop
 			}
 			recordFirst(set)
+			break loop
+		case compile.OpSplit:
+			// A split is the leading construct only when no fixed byte has been
+			// consumed yet (firstResolved is false). If a literal prefix already
+			// preceded it (e.g. ab(c|d)), the first-byte set is already pinned by that
+			// prefix, so simply end the analysable prefix here. Otherwise (e.g.
+			// foo|bar, an a*-style optional, a leading group) collect the union of the
+			// first bytes reachable from this split: if every alternative resolves to
+			// a determinable byte set, the union is an exact first-byte oracle; if any
+			// branch is non-reducible or can match empty (so a later atom's byte could
+			// lead), the whole prefilter is given up.
+			if firstResolved {
+				break loop
+			}
+			var set byteSet
+			if firstByteSet(insts, pc, &set, 0) {
+				recordFirst(set)
+			}
 			break loop
 		default:
 			// Any other instruction (split/alternation, dot, fold, property, look,
@@ -163,6 +182,81 @@ func classFirstBytes(in compile.Inst) (byteSet, bool) {
 		set = neg
 	}
 	return set, true
+}
+
+// maxFirstByteDepth bounds the recursion of firstByteSet so an adversarial nest
+// of leading splits cannot make analysis (run once at compile time) blow the
+// stack. Beyond it the set is declared non-reducible and the prefilter is given
+// up — never an incorrect skip, only a missed optimization.
+const maxFirstByteDepth = 64
+
+// firstByteSet walks the program from pc following only zero-width pass-through
+// instructions and the branches of a split, adding to set the bytes every
+// reachable leading atom can start with. It reports whether the leading byte is
+// fully determinable: true means set is an exact union over all alternatives, so
+// a match from here must begin with a byte in set; false means some reachable
+// path is not byte-reducible (a rune-aware atom, the dot, a backref, a call, a
+// lookaround, a loop back-edge, or a branch that can match empty so a later
+// atom's byte could lead) and the caller must give up.
+//
+// It is the alternation generalization of the single-atom first-byte derivation:
+// for foo|bar it unions {f} and {b}; for [ax]|[by] it unions the two classes; it
+// refuses a|.b (dot branch) or (a|)b (an empty branch lets b lead).
+func firstByteSet(insts []compile.Inst, pc int, set *byteSet, depth int) bool {
+	if depth > maxFirstByteDepth || pc < 0 || pc >= len(insts) {
+		return false
+	}
+	for {
+		in := insts[pc]
+		switch in.Op {
+		case compile.OpSave, compile.OpAtomicBegin:
+			// Zero-width, unconditional: a capture open/close or an atomic-group open
+			// does not consume input or branch, so step over it to the next atom.
+			pc++
+			if pc >= len(insts) {
+				return false
+			}
+		case compile.OpChar:
+			set.add(in.B)
+			return true
+		case compile.OpClass:
+			cs, ok := classFirstBytes(in)
+			if !ok {
+				return false
+			}
+			orInto(set, cs)
+			return true
+		case compile.OpSplit:
+			// Both branches are reachable leading positions; the union of their first
+			// bytes is the first-byte set of the alternation/optional. A bounded
+			// recursion follows each; either being non-reducible fails the whole set.
+			if !firstByteSet(insts, in.X, set, depth+1) {
+				return false
+			}
+			return firstByteSet(insts, in.Y, set, depth+1)
+		case compile.OpJmp:
+			// Follow the unconditional jump (the tail of an alternation branch). A
+			// back-edge (jmp to an earlier pc, the loop of a *-quantifier) would lead
+			// to a position that can match empty and let a later atom's byte lead, so
+			// refuse it rather than risk an unsound set.
+			if in.X <= pc {
+				return false
+			}
+			pc = in.X
+		default:
+			// Any other op as a leading atom — the dot, a fold/property/rune-aware
+			// atom, a backref, a call, a lookaround, an anchor, OpMatch (an empty
+			// alternative), … — is not reducible to a flat byte set here.
+			return false
+		}
+	}
+}
+
+// orInto unions src into dst.
+func orInto(dst *byteSet, src byteSet) {
+	for i := range dst {
+		dst[i] |= src[i]
+	}
 }
 
 // nextStart returns the smallest start position >= from at which a match could

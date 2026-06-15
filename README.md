@@ -50,11 +50,12 @@ It is the regexp backend for
 >
 > **Start-position prefilter (Phase 4)** is in: the optimizer derives, where it
 > can, a `\A` anchor, a required literal prefix, or a leading first-byte set from
-> the compiled program and uses it to skip start positions that provably cannot
-> begin a match (a `strings.Index` / byte-set scan instead of running the VM at
-> every offset). It is fully transparent — every candidate is still verified by
-> the VM, so results are byte-identical — and gives ~200× on a literal-prefixed
-> scan of a long non-matching haystack.
+> the compiled program — including the union over a leading alternation
+> (`foo|bar` → `{f,b}`, `a*b` → `{a,b}`) — and uses it to skip start positions
+> that provably cannot begin a match (a `strings.Index` / byte-set scan instead
+> of running the VM at every offset). It is fully transparent — every candidate
+> is still verified by the VM, so results are byte-identical — and gives ~200× on
+> a literal-prefixed scan of a long non-matching haystack.
 >
 > **Wall-clock timeout (Phase 4)** is in: `re.WithTimeout(d)` returns a copy that
 > aborts any single match exceeding `d` of real time (Ruby's `Regexp.timeout`
