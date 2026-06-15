@@ -204,29 +204,29 @@ var diffCorpus = []rubyCase{
 	// Subexpression calls \g<…> (this phase). A call re-runs and re-captures the
 	// referenced group's sub-pattern; these are ASCII, so byte and character
 	// offsets coincide and the exact-span comparison applies.
-	{`(\d+)-\g<1>`, "12-34"},                            // absolute number, re-captures
-	{`(\d)\g<1>`, "12"},                                 // adjacent call
-	{`(\d)\g<1>`, "1"},                                  // call needs a second char: no match
-	{`(\w)\g<1>`, "ab"},                                 // word
-	{`(a|b)\g<1>`, "ab"},                                // call re-runs the alternation
-	{`(?<two>\d)\g<two>`, "34"},                         // named call
-	{`\g<two>(?<two>\d+)`, "123"},                       // forward named reference
-	{`\g<+1>(\d)`, "55"},                                // relative forward (needs two)
-	{`\g<+1>(\d)`, "5"},                                 // relative forward: one char, no match
-	{`(\d)\g<-1>`, "12"},                                // relative backward
-	{`(a)(b)\g<-2>\g<-1>`, "abab"},                      // two relative backward calls
-	{`(x)(\d)\g<2>`, "x12"},                             // call one of several groups
-	{`(\d)\g<1>\1`, "122"},                              // backref sees the call's re-capture
-	{`(\d)\g<1>\1`, "121"},                              // re-capture makes the backref fail
-	{`(?<x>\d)\g<x>+`, "1234"},                          // a quantified call
-	{`(?=(\d)\g<1>)\d+`, "12x"},                         // call inside a lookahead
-	{`foo(?=\g<1>)(bar)`, "foobar"},                     // forward call inside a lookahead
-	{`\((?:[^()]|\g<0>)*\)`, "((x))"},                   // \g<0> whole-pattern recursion
-	{`\((?:[^()]|\g<0>)*\)`, "(()"},                     // unbalanced: no match
-	{`(?<bal>\((?:[^()]|\g<bal>)*\))`, "(a(b)c)"},       // balanced parens, named recursion
-	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "((()))"},    // deep balanced parens, anchored
-	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "(()"},       // unbalanced, anchored: no match
-	{`\A(?<e>(?:[^<>]|<\g<e>>)*)\z`, "a<b<c>d>e"},      // balanced angle brackets grammar
+	{`(\d+)-\g<1>`, "12-34"},                                        // absolute number, re-captures
+	{`(\d)\g<1>`, "12"},                                             // adjacent call
+	{`(\d)\g<1>`, "1"},                                              // call needs a second char: no match
+	{`(\w)\g<1>`, "ab"},                                             // word
+	{`(a|b)\g<1>`, "ab"},                                            // call re-runs the alternation
+	{`(?<two>\d)\g<two>`, "34"},                                     // named call
+	{`\g<two>(?<two>\d+)`, "123"},                                   // forward named reference
+	{`\g<+1>(\d)`, "55"},                                            // relative forward (needs two)
+	{`\g<+1>(\d)`, "5"},                                             // relative forward: one char, no match
+	{`(\d)\g<-1>`, "12"},                                            // relative backward
+	{`(a)(b)\g<-2>\g<-1>`, "abab"},                                  // two relative backward calls
+	{`(x)(\d)\g<2>`, "x12"},                                         // call one of several groups
+	{`(\d)\g<1>\1`, "122"},                                          // backref sees the call's re-capture
+	{`(\d)\g<1>\1`, "121"},                                          // re-capture makes the backref fail
+	{`(?<x>\d)\g<x>+`, "1234"},                                      // a quantified call
+	{`(?=(\d)\g<1>)\d+`, "12x"},                                     // call inside a lookahead
+	{`foo(?=\g<1>)(bar)`, "foobar"},                                 // forward call inside a lookahead
+	{`\((?:[^()]|\g<0>)*\)`, "((x))"},                               // \g<0> whole-pattern recursion
+	{`\((?:[^()]|\g<0>)*\)`, "(()"},                                 // unbalanced: no match
+	{`(?<bal>\((?:[^()]|\g<bal>)*\))`, "(a(b)c)"},                   // balanced parens, named recursion
+	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "((()))"},                // deep balanced parens, anchored
+	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "(()"},                   // unbalanced, anchored: no match
+	{`\A(?<e>(?:[^<>]|<\g<e>>)*)\z`, "a<b<c>d>e"},                   // balanced angle brackets grammar
 	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "((((((((((x))))))))))"}, // deep nesting still matches
 	// A sub-capture inside a recursive group keeps its *deepest* binding (it is not
 	// active at the recursive call sites), while the recursive group keeps its
@@ -264,67 +264,67 @@ var diffCorpus = []rubyCase{
 	// matches, the backtrack points it created are discarded, so the engine never
 	// gives back to make the rest of the pattern succeed. These are stable,
 	// long-standing Onigmo features, so the exact-span oracle applies.
-	{`a++`, "aaa"},                  // possessive eats all a's
-	{`a++a`, "aaa"},                 // and refuses to give one back: no match
-	{`a*+`, "aaa"},                  // possessive star
-	{`a*+a`, "aaa"},                 // no give-back: no match
-	{`a?+`, "a"},                    // possessive optional
-	{`a?+a`, "aa"},                  // possessive ? keeps its one a
-	{`a?+a`, "a"},                   // nothing left for the trailing a: no match
-	{`a{2,3}+`, "aaaa"},             // {m,n}+ is a stacked + on the braced repeat: (a{2,3})+
-	{`a{2,3}+a`, "aaaa"},            // with a follower it gives back so the literal a matches
-	{`a{2,3}+a`, "aaa"},             // gives back to 2, literal takes the 3rd
-	{`a{2,3}+a`, "aa"},              // only two a's: no match
-	{`\d++\.\d`, "12.3"},            // possessive then a literal it does not eat
-	{`\d++`, "123abc"},              // possessive digits
-	{`[a-c]++d`, "abcd"},            // possessive class
-	{`a++b`, "aaab"},                // possessive then a distinct literal
-	{`(?>a+)`, "aaa"},               // atomic group
-	{`(?>a+)a`, "aaa"},              // atomic commits: no give-back, no match
-	{`(?>a*)b`, "aaab"},             // atomic star then b
-	{`(?>a*)b`, "b"},                // zero repetitions, then b
-	{`x(?>a*)`, "xaaa"},             // atomic at end of pattern
-	{`(?>a|ab)c`, "abc"},            // atomic alternation commits to first: no match
-	{`(?:a|ab)c`, "abc"},            // (contrast) non-atomic backtracks and matches
-	{`(?>a+)+b`, "aaab"},            // nested atomic under a greedy +
-	{`(?>a*)*b`, "aaab"},            // atomic star under a greedy star
-	{`(?>(a+))(b)`, "aaab"},         // captures inside an atomic group persist
-	{`((?>a+))a`, "aaa"},            // atomic group inside a capture: no give-back
-	{`(?>(a)|(ab))(c)`, "abc"},      // atomic alternation with captures: no match
-	{`(a)++`, "aaa"},                // possessive over a capture: last binding wins
-	{`(a)*+`, "aaa"},                // possessive star over a capture
-	{`(ab)++`, "ababab"},            // possessive over a multi-char capture
-	{`(a|b)*+c`, "abc"},             // possessive over an alternation, last wins
-	{`((a)|(b))++`, "ab"},           // nested captures under a possessive
-	{`(?>a+?)b`, "aaab"},            // atomic over a lazy body: commits to the minimum
-	{`(?>a??)a`, "aa"},              // atomic over a lazy optional: commits to zero
-	{`(?>)a`, "a"},                  // empty atomic group is a no-op
-	{`(?=(\d)\g<1>)\d+`, "12x"},     // atomic-cut machinery alongside a \g<…> call
-	{`x(?>a*)+y`, "xaaay"},          // possessive-style nesting still terminates
+	{`a++`, "aaa"},              // possessive eats all a's
+	{`a++a`, "aaa"},             // and refuses to give one back: no match
+	{`a*+`, "aaa"},              // possessive star
+	{`a*+a`, "aaa"},             // no give-back: no match
+	{`a?+`, "a"},                // possessive optional
+	{`a?+a`, "aa"},              // possessive ? keeps its one a
+	{`a?+a`, "a"},               // nothing left for the trailing a: no match
+	{`a{2,3}+`, "aaaa"},         // {m,n}+ is a stacked + on the braced repeat: (a{2,3})+
+	{`a{2,3}+a`, "aaaa"},        // with a follower it gives back so the literal a matches
+	{`a{2,3}+a`, "aaa"},         // gives back to 2, literal takes the 3rd
+	{`a{2,3}+a`, "aa"},          // only two a's: no match
+	{`\d++\.\d`, "12.3"},        // possessive then a literal it does not eat
+	{`\d++`, "123abc"},          // possessive digits
+	{`[a-c]++d`, "abcd"},        // possessive class
+	{`a++b`, "aaab"},            // possessive then a distinct literal
+	{`(?>a+)`, "aaa"},           // atomic group
+	{`(?>a+)a`, "aaa"},          // atomic commits: no give-back, no match
+	{`(?>a*)b`, "aaab"},         // atomic star then b
+	{`(?>a*)b`, "b"},            // zero repetitions, then b
+	{`x(?>a*)`, "xaaa"},         // atomic at end of pattern
+	{`(?>a|ab)c`, "abc"},        // atomic alternation commits to first: no match
+	{`(?:a|ab)c`, "abc"},        // (contrast) non-atomic backtracks and matches
+	{`(?>a+)+b`, "aaab"},        // nested atomic under a greedy +
+	{`(?>a*)*b`, "aaab"},        // atomic star under a greedy star
+	{`(?>(a+))(b)`, "aaab"},     // captures inside an atomic group persist
+	{`((?>a+))a`, "aaa"},        // atomic group inside a capture: no give-back
+	{`(?>(a)|(ab))(c)`, "abc"},  // atomic alternation with captures: no match
+	{`(a)++`, "aaa"},            // possessive over a capture: last binding wins
+	{`(a)*+`, "aaa"},            // possessive star over a capture
+	{`(ab)++`, "ababab"},        // possessive over a multi-char capture
+	{`(a|b)*+c`, "abc"},         // possessive over an alternation, last wins
+	{`((a)|(b))++`, "ab"},       // nested captures under a possessive
+	{`(?>a+?)b`, "aaab"},        // atomic over a lazy body: commits to the minimum
+	{`(?>a??)a`, "aa"},          // atomic over a lazy optional: commits to zero
+	{`(?>)a`, "a"},              // empty atomic group is a no-op
+	{`(?=(\d)\g<1>)\d+`, "12x"}, // atomic-cut machinery alongside a \g<…> call
+	{`x(?>a*)+y`, "xaaay"},      // possessive-style nesting still terminates
 
 	// Hex-digit classes \h \H and the linebreak escape \R (this increment). \h is
 	// [0-9A-Fa-f], \H its complement; \R matches a CRLF pair atomically or any one
 	// linebreak. These are stable Onigmo features, so the exact-span oracle applies
 	// (the ASCII linebreaks here keep byte and character offsets equal; the
 	// multi-byte NEL/LS/PS forms are pinned by oracle-independent unit tests).
-	{`\h`, "g9z"},                   // first hex digit
-	{`\h+`, "9aFg"},                 // run of hex digits
-	{`\H`, "9z"},                    // first non-hex
-	{`\H+`, "  9ab"},                // run of non-hex
-	{`[\h]+x`, "9aFx"},              // \h inside a class
-	{`[\H]+9`, "zz9"},               // \H inside a class
-	{`[\h\s]+`, "9a \tF"},           // \h combined with another class in a set
-	{`0x\h+`, "0xC0FFEEz"},          // a realistic hex literal
-	{`\R`, "\r\n"},                  // CRLF matched as one unit
-	{`\R`, "\n"},                    // bare LF
-	{`\R`, "\r"},                    // bare CR
-	{`\R`, "\v"},                    // vertical tab
-	{`\R`, "\f"},                    // form feed
-	{`\R+`, "\r\n\n\r"},             // a run of linebreaks (CRLF stays atomic)
-	{`\R\n`, "\r\n"},                // atomic: the CRLF is not split, so this fails
-	{`a\Rb`, "a\r\nb"},              // \R between literals
-	{`\Rx`, "\r\nx"},                // \R eats the CRLF, then x matches
-	{`(?>\h+)x`, "9aFx"},            // \h under an atomic group
+	{`\h`, "g9z"},          // first hex digit
+	{`\h+`, "9aFg"},        // run of hex digits
+	{`\H`, "9z"},           // first non-hex
+	{`\H+`, "  9ab"},       // run of non-hex
+	{`[\h]+x`, "9aFx"},     // \h inside a class
+	{`[\H]+9`, "zz9"},      // \H inside a class
+	{`[\h\s]+`, "9a \tF"},  // \h combined with another class in a set
+	{`0x\h+`, "0xC0FFEEz"}, // a realistic hex literal
+	{`\R`, "\r\n"},         // CRLF matched as one unit
+	{`\R`, "\n"},           // bare LF
+	{`\R`, "\r"},           // bare CR
+	{`\R`, "\v"},           // vertical tab
+	{`\R`, "\f"},           // form feed
+	{`\R+`, "\r\n\n\r"},    // a run of linebreaks (CRLF stays atomic)
+	{`\R\n`, "\r\n"},       // atomic: the CRLF is not split, so this fails
+	{`a\Rb`, "a\r\nb"},     // \R between literals
+	{`\Rx`, "\r\nx"},       // \R eats the CRLF, then x matches
+	{`(?>\h+)x`, "9aFx"},   // \h under an atomic group
 
 	// Start-position prefilter (Phase 4 optimizer). These exercise the literal
 	// -prefix, first-byte-set, and \A-anchored fast paths against haystacks where
@@ -332,20 +332,35 @@ var diffCorpus = []rubyCase{
 	// skipping. The optimization is transparent, so MRI must agree on every span.
 	{`needle`, "haystack with a needle hidden inside the haystack"}, // literal prefix far in
 	{`needle`, "a haystack with no match at all in this string"},    // literal prefix: no match
-	{`cat`, "the cat sat"},                                          // short literal prefix
-	{`[xyz]oo`, "look at the zoo over there"},                       // first-byte set {x,y,z}
-	{`[^a]bc`, "aaaabc"},                                            // negated-class first byte
-	{`\Aquick`, "quick brown fox"},                                  // anchored, matches at 0
-	{`\Aquick`, "a quick brown fox"},                                // anchored, no match (not at 0)
-	{`a[bc]d`, "xxxabdyyy"},                                         // literal byte then class
+	{`cat`, "the cat sat"},                    // short literal prefix
+	{`[xyz]oo`, "look at the zoo over there"}, // first-byte set {x,y,z}
+	{`[^a]bc`, "aaaabc"},                      // negated-class first byte
+	{`\Aquick`, "quick brown fox"},            // anchored, matches at 0
+	{`\Aquick`, "a quick brown fox"},          // anchored, no match (not at 0)
+	{`a[bc]d`, "xxxabdyyy"},                   // literal byte then class
 	// Alternation-aware first-byte set (Phase 4 optimizer pass): a leading
 	// alternation of byte-determinable branches yields the union of first bytes.
-	{`foo|bar`, "look in the bar now"},                              // alternation, second branch
-	{`foo|bar`, "look in the foo now"},                              // alternation, first branch
-	{`cat|dog|emu`, "the emu and the dog"},                          // three-way, leftmost-first
-	{`[ax]|[by]`, "qqqybbb"},                                        // alternation of byte classes
-	{`a*b`, "cccab"},                                                // leading optional: 'a' or 'b'
-	{`a*b`, "cccb"},                                                 // zero a's
+	{`foo|bar`, "look in the bar now"},     // alternation, second branch
+	{`foo|bar`, "look in the foo now"},     // alternation, first branch
+	{`cat|dog|emu`, "the emu and the dog"}, // three-way, leftmost-first
+	{`[ax]|[by]`, "qqqybbb"},               // alternation of byte classes
+	{`a*b`, "cccab"},                       // leading optional: 'a' or 'b'
+	{`a*b`, "cccb"},                        // zero a's
+	// Required-interior-literal prefilter (Phase 4): a fixed substring that must
+	// occur inside every match even with no anchor or leading literal. The engine
+	// whole-haystack-gates on it but the VM still decides the actual span; these
+	// pin transparency across the matching, gated-out, and present-but-unsatisfied
+	// cases.
+	{`\d+foo\d+`, "ab 12foo34 cd"},      // interior literal present, surrounded by digits
+	{`\d+foo\d+`, "ab 12bar34 cd"},      // literal absent: gated out, no match
+	{`\d+foo\d+`, "foo with no digits"}, // literal present but pattern unsatisfied
+	{`[ab]*xyz[cd]*`, "qqaaxyzccqq"},    // interior literal between optional classes
+	{`[ab]*xyz[cd]*`, "nothing here"},
+	{`.abc`, "ZZZabcZZZ"}, // leading dot, interior literal "abc"
+	{`.abc`, "no run present"},
+	{`x\d+world`, "xx x9world yy"}, // "world" required after x\d+
+	{`x\d+world`, "x9planet"},      // "world" absent
+	{`foo(bar)baz`, "qfoobarbazq"}, // literal spans a captured group
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

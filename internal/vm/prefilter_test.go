@@ -103,9 +103,13 @@ func TestAnalyzeUnusable(t *testing.T) {
 	if analyze(build(t, `\p{L}x`)).usable() {
 		t.Fatal("property-led pattern must be unusable")
 	}
-	// A leading dot before a literal must be unusable (the dot ends analysis).
-	if analyze(build(t, ".abc")).usable() {
-		t.Fatal("leading-dot pattern must be unusable")
+	// A leading dot before a single-byte literal must be unusable: the dot ends the
+	// prefix/first analysis and the lone trailing byte is too short (< 2) for the
+	// required-interior-literal filter. (A leading dot before a 2+ byte literal,
+	// e.g. ".abc", is now usable via that interior filter — see
+	// TestAnalyzeRequiredLiteral.)
+	if analyze(build(t, ".a")).usable() {
+		t.Fatal("leading-dot then single byte must be unusable")
 	}
 	// A leading lookahead must be unusable.
 	if analyze(build(t, "(?=a)b")).usable() {
@@ -296,6 +300,133 @@ func TestClassFirstBytesRuneAware(t *testing.T) {
 	}
 }
 
+// TestAnalyzeRequiredLiteral verifies the required-interior-literal extraction:
+// the longest fixed byte run on the mandatory spine, across quantifiers, captured
+// groups, and lookarounds, but never across an alternation or through optional
+// content.
+func TestAnalyzeRequiredLiteral(t *testing.T) {
+	cases := []struct{ pat, want string }{
+		// Classic interior literals with no anchor or leading literal.
+		{`\d+foo\d+`, "foo"},
+		{`[ab]*xyz[cd]*`, "xyz"},
+		{`x\d+world`, "world"}, // leading 'x' (len 1) loses to "world"
+		// A literal that spans a required captured group stays one run (OpSave and
+		// OpReturn are zero-width pass-throughs).
+		{`foo(bar)baz`, "foobarbaz"},
+		// A quantified group is optional: only the forced bytes around it count.
+		{`pre\w*post`, "post"}, // "pre" (3) loses to "post" (4)
+		// Lookarounds are zero-width: the walk skips the asserted body and keeps the
+		// forced continuation.
+		{`(?=foo)bar`, "bar"},
+		{`(?!foo)barbaz`, "barbaz"},
+		// An alternation forks the spine: nothing past it is forced, and a 1-byte
+		// lead is too short, so no required literal.
+		{`a(b|c)d`, ""},
+		{`foo|bar`, ""},
+		// All-optional content has no required literal.
+		{`a?b?c?`, ""},
+		// A single interior byte is below the 2-byte threshold.
+		{`\d-\d`, ""},
+		// Under /i the literals are rune-aware (OpFoldChar), not fixed bytes.
+		{`(?i)x?required`, ""},
+	}
+	for _, c := range cases {
+		if got := requiredLiteral(build(t, c.pat).Insts); got != c.want {
+			t.Errorf("requiredLiteral(%q) = %q, want %q", c.pat, got, c.want)
+		}
+	}
+}
+
+// TestRequiredLiteralUsable verifies a pattern whose only exploitable structure
+// is a required interior literal is reported usable (so the whole-haystack gate
+// runs), while one whose interior is too short is not.
+func TestRequiredLiteralUsable(t *testing.T) {
+	pf := analyze(build(t, `\d+foo\d+`))
+	if pf.prefix != "" || pf.anchored {
+		t.Fatalf("\\d+foo\\d+ must have no prefix/anchor, got prefix %q anchored %v", pf.prefix, pf.anchored)
+	}
+	if pf.required != "foo" {
+		t.Fatalf("required = %q, want foo", pf.required)
+	}
+	if !pf.usable() {
+		t.Fatal("a required-interior-literal prefilter must be usable")
+	}
+	// A leading-dot then single byte: no prefix, no first set, interior too short.
+	if analyze(build(t, `.a`)).usable() {
+		t.Fatal(".a must be unusable (interior literal < 2 bytes)")
+	}
+}
+
+// TestRequiredLiteralDegenerateGuards covers the defensive guards in
+// requiredLiteral that protect against malformed programs: a quantifier split
+// whose GuardTo does not advance, a lookaround whose continuation does not
+// advance, and the step bound. None can occur from the compiler, so they are
+// exercised with synthetic instruction lists.
+func TestRequiredLiteralDegenerateGuards(t *testing.T) {
+	// A quantifier split whose GuardTo points back at itself: the walk must stop
+	// with whatever run it had, not loop. Two leading chars give a run "ab" the
+	// flush keeps before the bad split.
+	bad := []compile.Inst{
+		{Op: compile.OpChar, B: 'a'},
+		{Op: compile.OpChar, B: 'b'},
+		{Op: compile.OpSplit, Quant: true, GuardTo: 2}, // GuardTo == pc (no advance)
+	}
+	if got := requiredLiteral(bad); got != "ab" {
+		t.Fatalf("non-advancing quant GuardTo: got %q, want ab", got)
+	}
+	// A lookaround whose continuation X does not advance must likewise stop.
+	badLook := []compile.Inst{
+		{Op: compile.OpChar, B: 'a'},
+		{Op: compile.OpChar, B: 'b'},
+		{Op: compile.OpLook, X: 2}, // X == pc (no advance)
+	}
+	if got := requiredLiteral(badLook); got != "ab" {
+		t.Fatalf("non-advancing look X: got %q, want ab", got)
+	}
+	// A pc-out-of-range start (empty program) returns the empty run immediately.
+	if got := requiredLiteral(nil); got != "" {
+		t.Fatalf("empty program: got %q, want empty", got)
+	}
+	// A stray OpLookEnd (one not jumped over by its OpLook) hits the default stop
+	// arm, flushing the run accumulated before it.
+	stray := []compile.Inst{
+		{Op: compile.OpChar, B: 'a'},
+		{Op: compile.OpChar, B: 'b'},
+		{Op: compile.OpLookEnd},
+	}
+	if got := requiredLiteral(stray); got != "ab" {
+		t.Fatalf("stray OpLookEnd: got %q, want ab", got)
+	}
+	// A program of only zero-width pass-throughs accumulates no literal and runs off
+	// the end without flushing a 2+ run.
+	var passes []compile.Inst
+	for i := 0; i < 5; i++ {
+		passes = append(passes, compile.Inst{Op: compile.OpReturn})
+	}
+	if got := requiredLiteral(passes); got != "" {
+		t.Fatalf("all-pass-through program: got %q, want empty", got)
+	}
+}
+
+// TestRequiredGateRejectsMissingLiteral verifies the whole-haystack gate in Match
+// rejects an input lacking the required interior literal without running the VM at
+// any position, and admits one containing it (the VM then decides the match).
+func TestRequiredGateRejectsMissingLiteral(t *testing.T) {
+	prog := build(t, `\d+foo\d+`)
+	// Missing "foo": gated out.
+	if _, ok, _ := Match(prog, "12bar34", DefaultBudget); ok {
+		t.Fatal("haystack without the required literal must not match")
+	}
+	// Present "foo" with surrounding digits: matches.
+	if _, ok, _ := Match(prog, "12foo34", DefaultBudget); !ok {
+		t.Fatal("haystack with literal and digits must match")
+	}
+	// Present "foo" but no surrounding digits: gate passes, VM rejects.
+	if _, ok, _ := Match(prog, "foo", DefaultBudget); ok {
+		t.Fatal("literal present but pattern unsatisfied must not match")
+	}
+}
+
 // TestNextStartAnchored covers both anchored outcomes.
 func TestNextStartAnchored(t *testing.T) {
 	pf := prefilter{anchored: true}
@@ -395,6 +526,22 @@ func TestPrefilterTransparency(t *testing.T) {
 		{"a*b", "ccc"},
 		{`(?>a|b)c`, "zzbczz"},
 		{`(?>foo)bar`, "xfoobary"},
+		// Required interior literal (no anchor, no leading literal): the gate must
+		// reject haystacks lacking the literal and pass those containing it, with the
+		// VM still deciding the actual match.
+		{`\d+foo\d+`, "12foo34"},
+		{`\d+foo\d+`, "12bar34"},     // literal absent: gated out, no match
+		{`\d+foo\d+`, "foo"},         // literal present but no surrounding digits: no match
+		{`[ab]*xyz[cd]*`, "aaxyzcc"},
+		{`[ab]*xyz[cd]*`, "nothing here at all"},
+		{`.abc`, "Zabc"},
+		{`.abc`, "no a-b-c run"},
+		{`.abc`, "abc"},             // dot needs a leading byte: no match at 0
+		{`(?=foo)bar`, "barfoo no"}, // lookahead-led; required "bar" present but assertion fails
+		{`x\d+world`, "x9world"},
+		{`x\d+world`, "x9planet"},   // "world" absent: gated out
+		{`foo(bar)baz`, "zfoobarbazz"},
+		{`foo(bar)baz`, "foobarbaz"},
 	}
 	for _, c := range cases {
 		fast := build(t, c.pat)
@@ -486,11 +633,33 @@ func BenchmarkAlternationFirstByteMiss(b *testing.B) {
 	}
 }
 
-// BenchmarkNoPrefilterMiss is the baseline: a leading dot defeats the prefilter,
-// so the VM runs at every start position. It bounds the speedup the prefilter
-// buys on the same haystack.
+// BenchmarkRequiredInteriorMiss exercises the required-interior-literal prefilter
+// on a long haystack that never contains the literal: a pattern with no anchor and
+// no leading literal (\d+needle\d+) whose mandatory interior "needle" lets a single
+// strings.Contains reject the whole haystack, instead of invoking the VM at every
+// one of the haystack's offsets. Compare against BenchmarkNoPrefilterMiss (same
+// haystack, a leading-dot pattern the filter cannot exploit) for the speedup.
+func BenchmarkRequiredInteriorMiss(b *testing.B) {
+	prog := mustBuild(b, `\d+needle\d+`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, _ := Match(prog, benchHaystack, DefaultBudget); ok {
+			b.Fatal("unexpected match")
+		}
+	}
+}
+
+// BenchmarkNoPrefilterMiss is the baseline: a leading dot followed by a single
+// byte defeats every prefilter (no anchor, no leading literal, no usable first
+// byte, and the lone trailing byte is below the interior-literal threshold), so
+// the VM runs at every start position. It bounds the speedup the prefilters buy on
+// the same haystack. (A trailing literal such as ".needle" is now covered by the
+// required-interior-literal filter — see BenchmarkRequiredInteriorMiss.) The
+// digit-led tail matches nothing in the all-letters haystack, so the VM still
+// rejects every offset, isolating the unfiltered cost.
 func BenchmarkNoPrefilterMiss(b *testing.B) {
-	prog := mustBuild(b, ".needle")
+	prog := mustBuild(b, `.\d`)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

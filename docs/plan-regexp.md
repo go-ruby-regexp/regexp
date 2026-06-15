@@ -284,8 +284,9 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   Still to come in Phase 3: multi-encoding support (the rune-level `/i`
   case-folding above is now done for literals and classes).
 - **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
-  wall-clock timeout), optimizer (first-byte sets, literal prefixes — ✅ start
-  -position prefilter done), benchmarks.
+  wall-clock timeout), optimizer (✅ start-position prefilter: anchors, literal
+  prefixes, first-byte sets, alternation-aware; ✅ required-interior-literal
+  prefilter), benchmarks.
 
   **Memoization** ✅ *done* — the backtracking VM memoizes the
   (instruction, input-position) split states it reaches and never re-explores
@@ -328,6 +329,27 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   ~30× faster, and the alternation first-byte set ~4× faster than the VM-at-every
   -offset baseline.
 
+  **Required-interior-literal prefilter** ✅ *done* — the prefilter is extended to
+  patterns with *no* anchor and *no* leading literal but a fixed substring that
+  must appear *somewhere inside* every match, e.g. the `foo` of `\d+foo\d+` or the
+  `xyz` of `[ab]*xyz[cd]*`. The optimizer walks the program's *mandatory spine* —
+  the linear sequence every accepting run is forced to execute — collecting the
+  longest run of consecutive fixed bytes (`OpChar`). The walk crosses zero-width
+  pass-throughs (saves, atomic brackets, group `OpReturn`) without breaking byte
+  contiguity, steps over a single non-literal consume/assert while staying on the
+  spine, jumps past a *quantifier* via its compile-time `Quant`-marked split's
+  `GuardTo` continuation (the body is optional/repeatable, hence not required),
+  and skips a zero-width lookaround to its continuation; it stops at an
+  *alternation* fork (neither branch forced) or a call. Because the walk only ever
+  follows forced steps, any byte it emits must be matched by every run, so the
+  literal is a genuine *necessary* (not sufficient) condition. At search time a
+  single `strings.Contains` rejects a whole haystack lacking the literal before
+  the VM runs at any offset; when present, the per-position scan and the VM still
+  verify exactly as before, so results stay byte-identical (proven by the
+  brute-force equivalence test and the MRI corpus). On the same 90 KB
+  non-matching haystack a pattern the start-locating filters cannot exploit
+  (`\d+needle\d+`) runs **~158× faster** (24.8 µs vs 3.91 ms, 2 allocs vs 270 k).
+
   **Wall-clock timeout** ✅ *done* — a real-time deadline (Ruby's
   `Regexp.timeout` / per-pattern `timeout:` equivalent) backs up the
   deterministic step budget: a match still running past the deadline aborts and
@@ -338,8 +360,13 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   one AND), so a search with no deadline pays nothing and a deadline-bounded one
   amortizes the clock read to noise; the same poll runs inside the lookaround
   sub-VM. A pathological pattern is then bounded by whichever of the budget or the
-  deadline it reaches first. Still to come in Phase 4: more optimizer passes and
-  broader benchmarks; then Phase 3's multi-encoding support.
+  deadline it reaches first. Still to come in Phase 4: further optimizer passes
+  and broader benchmarks; the remaining big-ticket item is Phase 3's
+  multi-encoding support (the engine is byte-oriented with documented rune-aware
+  atoms — `OpFoldChar`, `OpUniProp`, rune-aware `OpClass` — operating on UTF-8;
+  generalising the cursor to other Onigmo encodings, e.g. ASCII-8BIT/binary,
+  UTF-16/32, EUC/Shift_JIS, is scoped as its own phase because it touches every
+  input-advancing atom and the offset model).
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
   adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
 

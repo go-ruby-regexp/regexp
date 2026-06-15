@@ -4,6 +4,7 @@ package vm
 
 import (
 	"errors"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -154,6 +155,19 @@ func MatchTimeout(prog *compile.Program, input string, budget int, deadline time
 	// that provably cannot match.
 	pf := analyze(prog)
 	usePF := pf.usable()
+	// A required interior literal must appear SOMEWHERE in every match, even when
+	// the pattern has no anchor or leading literal (the "foo" of \d+foo\d+). A
+	// single whole-haystack search rejects inputs that lack it before the VM runs
+	// at any position. It is a necessary-but-not-sufficient condition — a present
+	// literal does not imply a match — so when present the per-position scan and
+	// the VM still verify exactly as before; only the no-occurrence case is
+	// short-circuited. This is orthogonal to the start-locating filters above and
+	// runs at most once. It is skipped when a leading literal prefix is present:
+	// that prefix's own start-locating search already rejects a haystack lacking
+	// it, so the gate would only repeat work.
+	if pf.required != "" && pf.prefix == "" && !strings.Contains(input, pf.required) {
+		return nil, false, nil
+	}
 	for start := 0; start <= len(input); start++ {
 		if usePF {
 			next := pf.nextStart(input, start)

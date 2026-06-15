@@ -57,6 +57,16 @@ It is the regexp backend for
 > is still verified by the VM, so results are byte-identical — and gives ~200× on
 > a literal-prefixed scan of a long non-matching haystack.
 >
+> **Required-interior-literal prefilter (Phase 4)** is in: even with no anchor and
+> no leading literal, the optimizer extracts a fixed substring that must appear
+> *somewhere inside* every match (the `foo` of `\d+foo\d+`, the `xyz` of
+> `[ab]*xyz[cd]*`) by walking the program's mandatory spine across quantifiers,
+> captured groups, and lookarounds but never across an alternation. A single
+> `strings.Contains` then rejects a whole haystack lacking it before the VM runs
+> at any offset; it stays transparent (the VM still verifies every survivor) and
+> gives **~158×** on a 90 KB non-matching haystack the start-locating filters
+> cannot exploit.
+>
 > **Wall-clock timeout (Phase 4)** is in: `re.WithTimeout(d)` returns a copy that
 > aborts any single match exceeding `d` of real time (Ruby's `Regexp.timeout`
 > equivalent), the real-time backstop to the deterministic step budget. The

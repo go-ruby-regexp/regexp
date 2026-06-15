@@ -51,6 +51,11 @@ func popcount(x uint64) int {
 //   - first: a set of possible first bytes; when no literal prefix is available
 //     but the leading byte is constrained, a byte scan skips to the next position
 //     whose byte is in the set.
+//   - required: a fixed substring that must appear SOMEWHERE in every match, even
+//     when the pattern has no anchored or leading literal (e.g. the "foo" in
+//     \d+foo\d+). A single strings.Index over the whole haystack rejects inputs
+//     that lack it outright; it is a necessary-but-not-sufficient condition, so the
+//     VM still verifies every surviving position.
 //
 // usable reports whether any of these is actually exploitable; when false the
 // scan runs unmodified (the fully general slow path), so correctness never
@@ -60,6 +65,7 @@ type prefilter struct {
 	prefix   string
 	first    byteSet
 	hasFirst bool
+	required string
 }
 
 // analyze derives a prefilter from a compiled program by walking the single
@@ -154,7 +160,110 @@ loop:
 	}
 
 	pf.prefix = lit.String()
+	pf.required = requiredLiteral(insts)
 	return pf
+}
+
+// requiredLiteral extracts the longest fixed byte string that provably must
+// appear somewhere inside every match, walking only the program's MANDATORY
+// SPINE — the linear sequence of instructions that every accepting run is forced
+// to execute, in order, regardless of how it backtracks. It collects maximal runs
+// of consecutive fixed bytes (OpChar) along that spine and returns the longest.
+//
+// The spine is what makes the result a *necessary* condition. Each step either:
+//   - contributes a fixed byte to the current run (OpChar);
+//   - is zero-width and unconditional, so it neither breaks byte contiguity nor
+//     leaves the spine (OpSave, OpAtomicBegin/End): the run continues across it;
+//   - consumes/asserts exactly one thing unconditionally but is not a fixed byte
+//     (OpAny, OpClass, OpFoldChar, OpUniProp, OpBackref, the anchor asserts): the
+//     run is broken (flushed as a candidate) but the spine continues, because a
+//     later required literal is still mandatory;
+//   - is a QUANTIFIER split (Quant, marked at compile time for *, +, ?, {m,n}):
+//     its body is optional/repeatable and therefore NOT required, but its GuardTo
+//     branch is the deterministic continuation past the whole quantifier, which
+//     stays on the spine — so the current run is flushed and the walk jumps there;
+//   - is anything else — an ALTERNATION split (a true fork: neither branch is
+//     forced), a jump, a lookaround, a call/return, OpMatch — at which the spine
+//     forks or ends, so the walk stops.
+//
+// Because the walk only ever follows forced steps, any byte it emits must be
+// matched, in order, by every accepting run; hence the returned literal is a
+// genuine necessary substring of every match. A run of length < 2 is not worth a
+// whole-haystack scan (the first-byte/prefix filters already cover short anchored
+// cases), so only runs of two or more bytes are considered.
+func requiredLiteral(insts []compile.Inst) string {
+	best := ""
+	var run strings.Builder
+	flush := func() {
+		if run.Len() >= 2 && run.Len() > len(best) {
+			best = run.String()
+		}
+		run.Reset()
+	}
+	// The walk strictly advances pc on every iteration that does not return: each
+	// arm either does pc++ or jumps strictly forward (the quantifier GuardTo and
+	// lookaround continuation guards reject a non-advancing target), so the loop is
+	// acyclic and bounded by len(insts) with no separate step counter needed.
+	pc := 0
+	for pc >= 0 && pc < len(insts) {
+		in := insts[pc]
+		switch in.Op {
+		case compile.OpChar:
+			run.WriteByte(in.B)
+			pc++
+		case compile.OpSave, compile.OpAtomicBegin, compile.OpAtomicEnd, compile.OpReturn:
+			// Zero-width, unconditional: a capture save, an atomic-group bracket, or a
+			// group terminator (which, with no active \g<…> call frame — and the walk
+			// never enters one, it stops at OpCall — simply falls through). Bytes on
+			// either side stay contiguous, so the run is NOT flushed; the spine
+			// continues to the next instruction. This keeps a literal that spans a
+			// captured group, e.g. the "foobarbaz" of foo(bar)baz, as one run.
+			pc++
+		case compile.OpAny, compile.OpClass, compile.OpFoldChar, compile.OpUniProp,
+			compile.OpBackref, compile.OpAssertBeginText, compile.OpAssertEndText,
+			compile.OpAssertEndTextOptNL, compile.OpAssertBeginLine,
+			compile.OpAssertEndLine, compile.OpAssertPrevMatch:
+			// Unconditional but not a fixed byte (or a zero-width assertion that breaks
+			// byte adjacency): end the current literal run, keep walking the spine.
+			flush()
+			pc++
+		case compile.OpSplit:
+			flush()
+			if in.Quant {
+				// A quantifier's body is optional/repeatable (not required); GuardTo is
+				// the forced continuation past the whole quantifier. Follow it only when
+				// it advances, so a degenerate GuardTo can never loop the walk.
+				if in.GuardTo <= pc {
+					return best
+				}
+				pc = in.GuardTo
+				continue
+			}
+			// An alternation fork: neither branch is forced, so no later byte is
+			// required; the spine ends here.
+			return best
+		case compile.OpLook:
+			// A lookaround is a zero-width, unconditional assertion: its inline body
+			// (which OpLook.X skips past) consumes none of the matched span, so its
+			// bytes are not part of any literal run and break adjacency. The assertion
+			// must hold for a match, and whatever follows it is still on the mandatory
+			// spine, so flush and jump to the continuation. Follow only forward so a
+			// degenerate target can never loop the walk.
+			flush()
+			if in.X <= pc {
+				return best
+			}
+			pc = in.X
+		default:
+			// OpJmp, OpLookEnd (only reached as a stray, since OpLook jumps over its
+			// body), OpCall/OpReturn, OpMatch: the spine forks, leaves the matched span,
+			// or ends. Stop.
+			flush()
+			return best
+		}
+	}
+	flush()
+	return best
 }
 
 // classFirstBytes returns the set of bytes a byte-oriented OpClass can match,
@@ -313,6 +422,12 @@ func (pf prefilter) usable() bool {
 		return true
 	}
 	if pf.hasFirst && pf.first.count() < 256 {
+		return true
+	}
+	// A required interior literal cannot locate a start position, but it lets the
+	// caller reject a haystack that lacks it; report it usable so the scan path is
+	// taken (the whole-haystack gate then short-circuits a missing literal).
+	if pf.required != "" {
 		return true
 	}
 	return false

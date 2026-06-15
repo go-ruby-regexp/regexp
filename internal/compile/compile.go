@@ -94,6 +94,7 @@ type Inst struct {
 	Rune       rune                 // OpFoldChar
 	X, Y       int                  // OpSplit, OpJmp
 	GuardTo    int                  // OpSplit: where the empty-loop guard jumps on revisit
+	Quant      bool                 // OpSplit: this split is a quantifier (*, +, ?, {m,n}) decision, not an alternation fork. Its GuardTo is the deterministic continuation past the whole quantifier, which the prefilter's mandatory-spine walk follows; an alternation split (Quant=false) is a true branch the spine must stop at.
 	Slot       int                  // OpSave
 	Ranges     []ast.ClassRange     // OpClass
 	RuneRanges []ast.RuneClassRange // OpClass (rune-aware code-point ranges, /i)
@@ -337,7 +338,7 @@ func (b *builder) repeat(s *ast.Star) {
 		// branch, exit becomes X). The exit target is the common end, patched below.
 		var splits []int
 		for i := 0; i < s.Max-s.Min; i++ {
-			split := b.emit(Inst{Op: OpSplit})
+			split := b.emit(Inst{Op: OpSplit, Quant: true})
 			splits = append(splits, split)
 			bodyPC := len(b.insts)
 			if s.Greedy {
@@ -366,7 +367,7 @@ func (b *builder) repeat(s *ast.Star) {
 // prefers the exit (split.X = exit, split.Y = body), so the body is entered only
 // when continuing past the loop fails.
 func (b *builder) starLoop(sub ast.Node, greedy bool) {
-	split := b.emit(Inst{Op: OpSplit})
+	split := b.emit(Inst{Op: OpSplit, Quant: true})
 	bodyPC := len(b.insts)
 	b.node(sub)
 	b.emit(Inst{Op: OpJmp, X: split})
