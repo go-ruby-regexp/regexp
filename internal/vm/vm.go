@@ -4,8 +4,10 @@ package vm
 
 import (
 	"errors"
+	"unicode/utf8"
 
 	"github.com/go-onigmo/regexp/internal/ast"
+	"github.com/go-onigmo/regexp/internal/charset"
 	"github.com/go-onigmo/regexp/internal/compile"
 )
 
@@ -117,9 +119,16 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 		case compile.OpClass:
-			if sp < len(m.input) && classMatch(in, m.input[sp]) {
+			if ok, w := m.classStep(in, sp); ok {
 				pc++
-				sp++
+				sp += w
+				m.consumed()
+				continue
+			}
+		case compile.OpUniProp:
+			if ok, w := m.propStep(in, sp); ok {
+				pc++
+				sp += w
 				m.consumed()
 				continue
 			}
@@ -282,9 +291,16 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 				continue
 			}
 		case compile.OpClass:
-			if sp < len(m.input) && classMatch(in, m.input[sp]) {
+			if ok, w := m.classStep(in, sp); ok {
 				pc++
-				sp++
+				sp += w
+				clear(visited)
+				continue
+			}
+		case compile.OpUniProp:
+			if ok, w := m.propStep(in, sp); ok {
+				pc++
+				sp += w
 				clear(visited)
 				continue
 			}
@@ -414,14 +430,92 @@ func charMatch(in compile.Inst, b byte) bool {
 	return b == in.B || (in.Fold && swapASCIICase(b) == in.B)
 }
 
-// classMatch reports whether byte b is accepted by an OpClass instruction.
-// Under case-insensitive matching (Fold), membership is tested for both b and
-// its ASCII-case counterpart before the class's Negate flag is applied — so e.g.
-// (?i)[a-z] accepts 'A' and (?i)[^a-z] rejects it.
+// classStep reports whether the OpClass instruction in matches at position sp
+// and, if so, how many bytes it consumes. A byte-oriented class (no \p{…}
+// member) consumes one byte; a rune-aware class decodes one UTF-8 code point
+// and consumes its byte length. It returns ok=false at end of input.
+func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
+	if sp >= len(m.input) {
+		return false, 0
+	}
+	if len(in.Props) == 0 {
+		if classMatch(in, m.input[sp]) {
+			return true, 1
+		}
+		return false, 0
+	}
+	if isContinuationByte(m.input[sp]) {
+		// Mid-code-point: a rune-aware atom never matches off a UTF-8 boundary,
+		// so the byte-oriented scan skips past continuation bytes just as MRI,
+		// which positions by character, never starts inside one.
+		return false, 0
+	}
+	r, w := utf8.DecodeRuneInString(m.input[sp:])
+	if classMatchRune(in, r) {
+		return true, w
+	}
+	return false, 0
+}
+
+// propStep reports whether the OpUniProp instruction in matches the code point
+// at position sp and, if so, its byte length. It returns ok=false at end of
+// input.
+func (m *machine) propStep(in compile.Inst, sp int) (ok bool, width int) {
+	if sp >= len(m.input) || isContinuationByte(m.input[sp]) {
+		return false, 0
+	}
+	r, w := utf8.DecodeRuneInString(m.input[sp:])
+	if charset.Match(in.Prop.Name, in.Prop.Negate, r) {
+		return true, w
+	}
+	return false, 0
+}
+
+// isContinuationByte reports whether b is a UTF-8 continuation byte (0x80–0xBF),
+// i.e. an interior byte of a multi-byte code point. A rune-aware atom refuses to
+// match at such a position so the byte-oriented scan never starts a code-point
+// test mid-character.
+func isContinuationByte(b byte) bool { return b&0xc0 == 0x80 }
+
+// classMatch reports whether byte b is accepted by a byte-oriented OpClass
+// instruction. Under case-insensitive matching (Fold), membership is tested for
+// both b and its ASCII-case counterpart before the class's Negate flag is
+// applied — so e.g. (?i)[a-z] accepts 'A' and (?i)[^a-z] rejects it.
 func classMatch(in compile.Inst, b byte) bool {
 	inSet := rangesContain(in.Ranges, b)
 	if in.Fold && !inSet {
 		inSet = rangesContain(in.Ranges, swapASCIICase(b))
+	}
+	return inSet != in.Negate
+}
+
+// classMatchRune reports whether code point r is accepted by a rune-aware
+// OpClass instruction (one carrying at least one \p{…} member). r is in the
+// positive set if it falls in any byte range (whose bounds, produced only from
+// byte syntax, are all ASCII) or satisfies any property member; the class's own
+// Negate is applied last. Folding still only affects the ASCII byte ranges,
+// matching the engine's ASCII-only case-folding boundary.
+func classMatchRune(in compile.Inst, r rune) bool {
+	inSet := false
+	for _, rg := range in.Ranges {
+		if r >= rune(rg.Lo) && r <= rune(rg.Hi) {
+			inSet = true
+			break
+		}
+		if in.Fold && r >= 0 && r <= 0x7f {
+			if b := swapASCIICase(byte(r)); b >= rg.Lo && b <= rg.Hi {
+				inSet = true
+				break
+			}
+		}
+	}
+	if !inSet {
+		for _, pr := range in.Props {
+			if charset.Match(pr.Name, pr.Negate, r) {
+				inSet = true
+				break
+			}
+		}
 	}
 	return inSet != in.Negate
 }

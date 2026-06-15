@@ -32,6 +32,7 @@ import (
 	"fmt"
 
 	"github.com/go-onigmo/regexp/internal/ast"
+	"github.com/go-onigmo/regexp/internal/charset"
 )
 
 // ErrSyntax is the base error returned for malformed patterns. All parse
@@ -551,9 +552,17 @@ func fixedWidth(n ast.Node) bool {
 		}
 	case *ast.Star:
 		return t.Min == t.Max && fixedWidth(t.Sub)
+	case *ast.UnicodeProp:
+		// A property matches one code point, whose UTF-8 byte width varies, so a
+		// lookbehind whose width must be a compile-time constant cannot contain it.
+		return false
+	case *ast.Class:
+		// A rune-aware class (one carrying a \p{…} member) likewise matches a
+		// code point of variable byte width; a byte-oriented class is one byte.
+		return len(t.Props) == 0
 	}
-	// Literal, AnyChar, Class, Anchor, Look, Empty, and containers whose parts
-	// all checked out are constant-width.
+	// Literal, AnyChar, byte Class, Anchor, Look, Empty, and containers whose
+	// parts all checked out are constant-width.
 	return true
 }
 
@@ -635,6 +644,12 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Anchor{Kind: ast.AnchorPrevMatch}, nil
 	case 'd', 'D', 'w', 'W', 's', 'S':
 		return perlClass(b), nil
+	case 'p', 'P':
+		name, negate, err := p.parseProp(b == 'P')
+		if err != nil {
+			return nil, err
+		}
+		return &ast.UnicodeProp{Name: name, Negate: negate}, nil
 	case 'n':
 		return &ast.Literal{B: '\n'}, nil
 	case 't':
@@ -662,6 +677,41 @@ func (p *parser) parseEscape() (ast.Node, error) {
 	default:
 		return nil, p.errorf("unsupported escape \\%c", b)
 	}
+}
+
+// parseProp parses the body of a Unicode property escape whose introducing
+// '\p' or '\P' has already been consumed: a brace-delimited property name
+// {name}, with an optional leading '^' inside the braces for negation. baseNeg
+// is true for the '\P' (negated) form; an inner '^' toggles it again, exactly
+// as in Onigmo/Ruby (so \P{^L} is the same as \p{L}). The one-letter forms
+// \pL / \PL are not accepted — Onigmo rejects them too — so a '{' is required.
+// The property name must be one charset recognises, else it is a syntax error.
+func (p *parser) parseProp(baseNeg bool) (name string, negate bool, err error) {
+	if p.eof() || p.peek() != '{' {
+		return "", false, p.errorf("expected { after \\p")
+	}
+	p.next() // consume '{'
+	negate = baseNeg
+	if !p.eof() && p.peek() == '^' {
+		p.next()
+		negate = !negate
+	}
+	start := p.pos
+	for !p.eof() && p.peek() != '}' {
+		p.next()
+	}
+	if p.eof() {
+		return "", false, p.errorf("missing } in \\p{...}")
+	}
+	name = p.src[start:p.pos]
+	p.next() // consume '}'
+	if name == "" {
+		return "", false, p.errorf("empty property name in \\p{}")
+	}
+	if !charset.Valid(name) {
+		return "", false, p.errorf("invalid character property name {%s}", name)
+	}
+	return name, negate, nil
 }
 
 // parseNamedBackref parses \k<name>, resolving to the (already-defined) group
@@ -742,9 +792,14 @@ func (p *parser) parseClass() (ast.Node, error) {
 			cls.Ranges = append(cls.Ranges, ranges...)
 			continue
 		}
-		lo, sub, err := p.parseClassItem()
+		lo, sub, prop, err := p.parseClassItem()
 		if err != nil {
 			return nil, err
+		}
+		if prop != nil {
+			// A \p{…} / \P{…} member makes the class rune-aware (see ast.Class).
+			cls.Props = append(cls.Props, *prop)
+			continue
 		}
 		if sub != nil {
 			// A class escape such as \d expands to ranges directly.
@@ -754,11 +809,11 @@ func (p *parser) parseClass() (ast.Node, error) {
 		// Possible range lo-hi.
 		if !p.eof() && p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
 			p.next() // consume '-'
-			hi, subHi, err := p.parseClassItem()
+			hi, subHi, propHi, err := p.parseClassItem()
 			if err != nil {
 				return nil, err
 			}
-			if subHi != nil {
+			if subHi != nil || propHi != nil {
 				return nil, p.errorf("invalid range end in character class")
 			}
 			if hi < lo {
@@ -771,41 +826,48 @@ func (p *parser) parseClass() (ast.Node, error) {
 	}
 }
 
-// parseClassItem parses one member of a character class: either a single byte
-// (returned as lo with sub == nil) or a class escape (returned as a slice of
-// ranges with lo unused). It assumes at least one byte remains.
-func (p *parser) parseClassItem() (byte, []ast.ClassRange, error) {
+// parseClassItem parses one member of a character class: a single byte
+// (returned as lo with sub and prop nil), a class escape such as \d (returned
+// as a slice of ranges), or a Unicode property escape \p{…}/\P{…} (returned as
+// prop). It assumes at least one byte remains.
+func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) {
 	b := p.next()
 	if b != '\\' {
-		return b, nil, nil
+		return b, nil, nil, nil
 	}
 	if p.eof() {
-		return 0, nil, p.errorf("trailing backslash in character class")
+		return 0, nil, nil, p.errorf("trailing backslash in character class")
 	}
 	e := p.next()
 	switch e {
 	case 'd':
-		return 0, digitRanges(), nil
+		return 0, digitRanges(), nil, nil
 	case 'w':
-		return 0, wordRanges(), nil
+		return 0, wordRanges(), nil, nil
 	case 's':
-		return 0, spaceRanges(), nil
+		return 0, spaceRanges(), nil, nil
 	case 'D':
-		return 0, negateRanges(digitRanges()), nil
+		return 0, negateRanges(digitRanges()), nil, nil
 	case 'W':
-		return 0, negateRanges(wordRanges()), nil
+		return 0, negateRanges(wordRanges()), nil, nil
 	case 'S':
-		return 0, negateRanges(spaceRanges()), nil
+		return 0, negateRanges(spaceRanges()), nil, nil
+	case 'p', 'P':
+		name, negate, err := p.parseProp(e == 'P')
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		return 0, nil, &ast.PropRef{Name: name, Negate: negate}, nil
 	case 'n':
-		return '\n', nil, nil
+		return '\n', nil, nil, nil
 	case 't':
-		return '\t', nil, nil
+		return '\t', nil, nil, nil
 	case 'r':
-		return '\r', nil, nil
+		return '\r', nil, nil, nil
 	case '\\', ']', '[', '^', '-':
-		return e, nil, nil
+		return e, nil, nil, nil
 	default:
-		return 0, nil, p.errorf("unsupported escape \\%c in character class", e)
+		return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
 	}
 }
 

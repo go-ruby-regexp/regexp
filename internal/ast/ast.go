@@ -32,13 +32,41 @@ type ClassRange struct {
 	Lo, Hi byte
 }
 
-// Class is a character class: a set of byte ranges, optionally negated. When
-// Fold is set (case-insensitive mode, /i), membership is tested against both an
-// input byte and its ASCII-case counterpart before Negate is applied.
+// PropRef is a reference to a Unicode property inside a character class (a
+// \p{name} or \P{name} member). Negate is the member-local negation from the
+// \P / \p{^…} form; it is independent of the enclosing class's own Negate.
+type PropRef struct {
+	Name   string
+	Negate bool
+}
+
+// Class is a character class: a set of byte ranges plus zero or more Unicode
+// property references, optionally negated as a whole. When Fold is set
+// (case-insensitive mode, /i), membership is tested against both an input byte
+// and its ASCII-case counterpart before Negate is applied.
+//
+// A class is byte-oriented (its ranges test a single input byte) unless it
+// contains a property reference, in which case the whole class becomes
+// rune-aware: the VM decodes one UTF-8 code point and tests it against both the
+// ranges (whose bounds, produced only from byte syntax, are all ASCII) and the
+// properties. This is the same rune/byte boundary the standalone UnicodeProp
+// node draws.
 type Class struct {
 	Ranges []ClassRange
+	Props  []PropRef
 	Negate bool
 	Fold   bool
+}
+
+// UnicodeProp matches a single Unicode code point that belongs to (or, when
+// Negate is set via \P{…} or \p{^…}, does not belong to) the named property.
+// It is the engine's one rune-aware atom: the VM decodes one UTF-8 code point
+// at the cursor and advances by that code point's byte length, whereas the
+// byte-oriented atoms (Literal, AnyChar, Class without properties) consume a
+// single byte.
+type UnicodeProp struct {
+	Name   string
+	Negate bool
 }
 
 // AnchorKind enumerates the zero-width anchors supported in Phase 0.
@@ -119,14 +147,15 @@ type Look struct {
 // Empty matches the empty string.
 type Empty struct{}
 
-func (*Literal) isNode()   {}
-func (*AnyChar) isNode()   {}
-func (*Class) isNode()     {}
-func (*Anchor) isNode()    {}
-func (*Concat) isNode()    {}
-func (*Alternate) isNode() {}
-func (*Star) isNode()      {}
-func (*Group) isNode()     {}
-func (*Backref) isNode()   {}
-func (*Look) isNode()      {}
-func (*Empty) isNode()     {}
+func (*Literal) isNode()     {}
+func (*AnyChar) isNode()     {}
+func (*Class) isNode()       {}
+func (*UnicodeProp) isNode() {}
+func (*Anchor) isNode()      {}
+func (*Concat) isNode()      {}
+func (*Alternate) isNode()   {}
+func (*Star) isNode()        {}
+func (*Group) isNode()       {}
+func (*Backref) isNode()     {}
+func (*Look) isNode()        {}
+func (*Empty) isNode()       {}

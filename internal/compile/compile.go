@@ -16,8 +16,14 @@ const (
 	// OpAny matches any byte and advances; unless DotAll is set it excludes
 	// '\n' (Ruby's /m option makes the dot match a newline too).
 	OpAny
-	// OpClass matches a byte in (or, if Negate, not in) Ranges and advances.
+	// OpClass matches a byte in (or, if Negate, not in) Ranges and advances. When
+	// Props is non-empty the class is rune-aware: it decodes one UTF-8 code point
+	// and tests it against both Ranges and Props before Negate is applied,
+	// advancing by the code point's byte length.
 	OpClass
+	// OpUniProp matches one UTF-8 code point that is a member of (or, if Negate,
+	// not a member of) the Unicode property Prop, advancing by its byte length.
+	OpUniProp
 	// OpSplit forks: try X first, then Y on backtrack (greedy ordering).
 	OpSplit
 	// OpJmp jumps to X.
@@ -57,6 +63,8 @@ type Inst struct {
 	X, Y   int              // OpSplit, OpJmp
 	Slot   int              // OpSave
 	Ranges []ast.ClassRange // OpClass
+	Props  []ast.PropRef    // OpClass (rune-aware members)
+	Prop   ast.PropRef      // OpUniProp
 	Negate bool             // OpClass, OpLook
 	Behind bool             // OpLook
 	Fold   bool             // OpChar, OpClass (case-insensitive, /i)
@@ -126,7 +134,9 @@ func (b *builder) node(n ast.Node) {
 	case *ast.AnyChar:
 		b.emit(Inst{Op: OpAny, DotAll: t.DotAll})
 	case *ast.Class:
-		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Negate: t.Negate, Fold: t.Fold})
+		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Props: t.Props, Negate: t.Negate, Fold: t.Fold})
+	case *ast.UnicodeProp:
+		b.emit(Inst{Op: OpUniProp, Prop: ast.PropRef{Name: t.Name, Negate: t.Negate}})
 	case *ast.Anchor:
 		b.anchor(t)
 	case *ast.Concat:

@@ -179,6 +179,52 @@ var diffCorpus = []rubyCase{
 	{`(.*)*$`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"},
 	{`(a+)+b`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 	{`(a+)+b`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"},
+
+	// Unicode property classes \p{…} on ASCII input (Phase 3). Here byte and
+	// character offsets coincide, so the exact-span comparison applies.
+	{`\p{L}+`, "abc123"},
+	{`\p{Lu}+`, "ABcd"},
+	{`\p{Ll}+`, "ABcd"},
+	{`\p{Nd}+`, "x42y"},
+	{`\p{N}+`, "x42y"},
+	{`\p{P}+`, "a!?,b"},
+	{`\p{S}+`, "a+=<b"},
+	{`\P{L}+`, "abc123!"},
+	{`\p{^Nd}+`, "12ab"},
+	{`\p{Alpha}+`, "abc12"},
+	{`\p{Alnum}+`, "ab12 cd"},
+	{`\p{Digit}+`, "a12b"},
+	{`\p{Upper}+`, "abCDef"},
+	{`\p{Lower}+`, "ABcdEF"},
+	{`\p{Word}+`, "foo_bar baz"},
+	{`[\p{L}\d]+`, "ab12!cd"},
+	{`[^\p{L}]+`, "ab12!cd"},
+	{`[\p{Lu}x]+`, "xXAby"},
+}
+
+// diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI
+// reports match offsets in characters whereas this engine reports them in
+// bytes, so these are compared by the matched substrings (whole match plus each
+// capture), which are representation-independent, rather than by raw offsets.
+var diffUnicodeCorpus = []rubyCase{
+	{`\p{L}+`, "héllo123"},
+	{`\p{L}`, "123éxy"},
+	{`\p{Lu}`, "héllo Wörld"},
+	{`\p{Ll}+`, "Héllo"},
+	{`\p{Lo}+`, "abc中文def"},
+	{`\p{N}+`, "café42"},
+	{`\p{Nd}+`, "²³45"},
+	{`\P{Alpha}+`, "héllo123"},
+	{`\p{^L}+`, "héllo123"},
+	{`\p{Alpha}+`, "héllo123"},
+	{`\p{Alnum}+`, "héllo123!"},
+	{`\p{Word}+`, "naïve_42 x"},
+	{`\p{Space}+`, "a \tb"},
+	{`\p{Z}+`, "a  b"},
+	{`\p{P}+`, "café—dash"},
+	{`[\p{L}\d]+`, "héllo3!"},
+	{`[^\p{L}]+`, "héllo123x"},
+	{`(\p{Lu})(\p{Ll}+)`, "Héllo"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each
@@ -207,6 +253,48 @@ end
 		t.Fatalf("ruby failed for /%s/ on %q: %v", c.pattern, c.input, err)
 	}
 	return strings.TrimSpace(string(out)), true
+}
+
+// runRubyStrings returns Ruby's matched substrings for one case: the whole
+// match then each capture (a non-participating capture renders as "\x00"). A
+// leading "nil" means no match. These are compared instead of offsets for
+// multi-byte inputs, where MRI reports character offsets and this engine reports
+// byte offsets but the matched text is identical.
+func runRubyStrings(t *testing.T, c rubyCase) string {
+	t.Helper()
+	script := `
+m = Regexp.new(ARGV[0]).match(ARGV[1])
+if m.nil?
+  puts "nil"
+else
+  parts = [m[0]]
+  (1..(m.size - 1)).each { |i| parts << (m[i].nil? ? "\x00" : m[i]) }
+  puts parts.join("\x01")
+end
+`
+	out, err := exec.Command("ruby", "-e", script, c.pattern, c.input).Output()
+	if err != nil {
+		t.Fatalf("ruby failed for /%s/ on %q: %v", c.pattern, c.input, err)
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
+// engineStrings renders this engine's matched substrings in the format
+// runRubyStrings uses.
+func engineStrings(re *onigmo.Regexp, input string) string {
+	m := re.Match(input)
+	if m == nil {
+		return "nil"
+	}
+	parts := []string{m.Str(0)}
+	for i := 1; i <= m.NGroups(); i++ {
+		if m.Begin(i) < 0 {
+			parts = append(parts, "\x00")
+		} else {
+			parts = append(parts, m.Str(i))
+		}
+	}
+	return strings.Join(parts, "\x01")
 }
 
 // engineSpans renders this engine's spans in the same format runRuby uses.
@@ -243,6 +331,30 @@ func TestDifferentialAgainstRuby(t *testing.T) {
 		want, _ := runRuby(t, c)
 		if got != want {
 			t.Errorf("/%s/ on %q: engine=%s ruby=%s", c.pattern, c.input, got, want)
+		}
+	}
+}
+
+// TestDifferentialUnicodeAgainstRuby compares matched substrings (not offsets)
+// on multi-byte UTF-8 input, where MRI's character offsets and this engine's
+// byte offsets differ by representation only.
+func TestDifferentialUnicodeAgainstRuby(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("differential oracle shells out to ruby; skipped on Windows")
+	}
+	if _, err := exec.LookPath("ruby"); err != nil {
+		t.Skip("ruby not on PATH; skipping differential test")
+	}
+	for _, c := range diffUnicodeCorpus {
+		re, err := onigmo.Compile(c.pattern)
+		if err != nil {
+			t.Errorf("compile /%s/: %v", c.pattern, err)
+			continue
+		}
+		got := engineStrings(re, c.input)
+		want := runRubyStrings(t, c)
+		if got != want {
+			t.Errorf("/%s/ on %q: engine=%q ruby=%q", c.pattern, c.input, got, want)
 		}
 	}
 }
