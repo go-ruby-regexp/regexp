@@ -113,7 +113,26 @@ func Match(prog *compile.Program, input string, budget int) ([]int, bool, error)
 	// is position 0; iterative scanning (gsub/scan) advances it on each step,
 	// which later phases will thread through here.
 	m.gpos = 0
+	// The prefilter is a transparent accelerator: it only ever advances the scan
+	// cursor to the next position that could begin a match (an exact necessary
+	// condition derived from a required literal prefix, a constrained first byte,
+	// or a \A anchor). Every position it yields is still run through the full VM,
+	// so results are identical to the unfiltered scan; it merely skips positions
+	// that provably cannot match.
+	pf := analyze(prog)
+	usePF := pf.usable()
 	for start := 0; start <= len(input); start++ {
+		if usePF {
+			next := pf.nextStart(input, start)
+			if next < 0 {
+				// No further position can begin a match.
+				return nil, false, nil
+			}
+			// nextStart only ever returns a position in [start, len(input)] (a
+			// required prefix or in-set byte is found within bounds) or -1, so the
+			// advanced cursor stays a valid start offset.
+			start = next
+		}
 		caps := make([]int, prog.NumSlots())
 		for i := range caps {
 			caps[i] = -1

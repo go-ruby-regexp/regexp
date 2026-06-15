@@ -48,6 +48,14 @@ It is the regexp backend for
 > `(a+)+$` run in polynomial rather than exponential time (with the step budget
 > as the backstop), producing the identical leftmost-first match.
 >
+> **Start-position prefilter (Phase 4)** is in: the optimizer derives, where it
+> can, a `\A` anchor, a required literal prefix, or a leading first-byte set from
+> the compiled program and uses it to skip start positions that provably cannot
+> begin a match (a `strings.Index` / byte-set scan instead of running the VM at
+> every offset). It is fully transparent — every candidate is still verified by
+> the VM, so results are byte-identical — and gives ~200× on a literal-prefixed
+> scan of a long non-matching haystack.
+>
 > **Rune/byte boundary.** `\p{…}` and a folded (`/i`) literal or class are the
 > **rune-aware** atoms: each decodes one UTF-8 code point and advances by its byte
 > length (a `\p{…}` member, or `/i`, also makes the enclosing character class

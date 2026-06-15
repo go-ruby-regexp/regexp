@@ -325,6 +325,19 @@ var diffCorpus = []rubyCase{
 	{`a\Rb`, "a\r\nb"},              // \R between literals
 	{`\Rx`, "\r\nx"},                // \R eats the CRLF, then x matches
 	{`(?>\h+)x`, "9aFx"},            // \h under an atomic group
+
+	// Start-position prefilter (Phase 4 optimizer). These exercise the literal
+	// -prefix, first-byte-set, and \A-anchored fast paths against haystacks where
+	// the match (if any) is far from the front, so the prefilter does real
+	// skipping. The optimization is transparent, so MRI must agree on every span.
+	{`needle`, "haystack with a needle hidden inside the haystack"}, // literal prefix far in
+	{`needle`, "a haystack with no match at all in this string"},    // literal prefix: no match
+	{`cat`, "the cat sat"},                                          // short literal prefix
+	{`[xyz]oo`, "look at the zoo over there"},                       // first-byte set {x,y,z}
+	{`[^a]bc`, "aaaabc"},                                            // negated-class first byte
+	{`\Aquick`, "quick brown fox"},                                  // anchored, matches at 0
+	{`\Aquick`, "a quick brown fox"},                                // anchored, no match (not at 0)
+	{`a[bc]d`, "xxxabdyyy"},                                         // literal byte then class
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

@@ -141,8 +141,10 @@ func TestBudgetExceeded(t *testing.T) {
 
 func TestBudgetExceededOnLaterStart(t *testing.T) {
 	// Budget is shared across start positions; this forces exhaustion after the
-	// first start position fails.
-	prog := build(t, "z")
+	// first start position fails. A leading "." has an unconstrained first byte so
+	// the start-position prefilter cannot prune the scan: every start runs the VM
+	// and spends budget, exactly as before the prefilter existed.
+	prog := build(t, ".z")
 	_, ok, err := Match(prog, "aaaa", 2)
 	if !errors.Is(err, ErrBudget) {
 		t.Fatalf("expected ErrBudget across starts, got ok=%v err=%v", ok, err)

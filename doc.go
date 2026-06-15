@@ -89,6 +89,13 @@
 // has explored and never re-explores one, so catastrophic patterns such as
 // (a+)+$ run in polynomial rather than exponential time while producing the
 // identical leftmost-first match. A deterministic step budget (and, for calls,
-// the recursion-depth cap) remains as the backstop. See docs/plan-regexp.md for
-// the full roadmap.
+// the recursion-depth cap) remains as the backstop.
+//
+// A transparent start-position prefilter (Phase 4) accelerates the search: the
+// optimizer analyses the compiled program's leading path for a \A anchor, a
+// required literal prefix, or a first-byte set, and uses it to skip start
+// positions that cannot begin a match (a strings.Index or byte-set scan instead
+// of invoking the VM at every offset). Every candidate it yields is still
+// verified by the VM, so results are byte-identical to an unfiltered scan. See
+// docs/plan-regexp.md for the full roadmap.
 package onigmo

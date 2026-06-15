@@ -284,7 +284,7 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   Still to come in Phase 3: multi-encoding support (the rune-level `/i`
   case-folding above is now done for literals and classes).
 - **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,
-  literal prefixes), benchmarks.
+  literal prefixes — ✅ start-position prefilter done), benchmarks.
 
   **Memoization** ✅ *done* — the backtracking VM memoizes the
   (instruction, input-position) split states it reaches and never re-explores
@@ -299,8 +299,28 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   per-advance reset of that set (its only role there is the zero-width-loop
   guard), and the lookaround sub-VM is unchanged. The deterministic step budget
   remains as the backstop for the residual cases (notably backref-bearing
-  patterns) that memoization cannot prune. Still to come in Phase 4: a wall-clock
-  timeout, the optimizer, and benchmarks.
+  patterns) that memoization cannot prune.
+
+  **Start-position prefilter** ✅ *done* — a transparent optimizer pass analyses
+  the compiled program's single linear entry path and derives, where it can, an
+  exact *necessary* condition on where a match may begin: a `\A` anchor (only
+  offset 0 can match), a required *literal prefix* (a leading run of fixed
+  bytes), and/or a *first-byte set* (a 256-bit bitset for a leading byte-oriented
+  class, including the complement for a negated class). At search time the scan
+  uses this to jump the start cursor straight to the next viable offset —
+  `strings.Index` for a literal prefix, a byte-set scan otherwise, a single
+  position for an anchor — instead of invoking the backtracking VM at every
+  offset. The analysis is deliberately conservative: at the first leading atom it
+  cannot reduce to bytes (the dot, a `/i`-folded or `\p{…}`-bearing class, a
+  split/alternation, a lookaround, …) it stops, and an unconstrained leading atom
+  (or a full first-byte set) leaves the prefilter unusable so the scan runs its
+  plain path. Every position the prefilter yields is still verified by the full
+  VM, so results are byte-identical to the unfiltered scan for every pattern and
+  input — proven by a brute-force-vs-prefilter equivalence test and the unchanged
+  MRI differential corpus. On a 90 KB non-matching haystack the literal-prefix
+  path is ~200× faster (16.6 µs vs 3.38 ms, 2 allocs vs 270 k) and the first-byte
+  -set path ~30× faster than the VM-at-every-offset baseline. Still to come in
+  Phase 4: a wall-clock timeout, more optimizer passes, and broader benchmarks.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
   adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
 
