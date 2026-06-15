@@ -73,10 +73,10 @@ func TestInlineFoldFlag(t *testing.T) {
 	}
 }
 
-// TestInlineFlagRejectsUnsupported confirms that flags other than i are
-// reported as syntax errors (until later phases add m/x/etc.).
+// TestInlineFlagRejectsUnsupported confirms that flag letters outside the
+// supported set i/m/x are reported as syntax errors.
 func TestInlineFlagRejectsUnsupported(t *testing.T) {
-	for _, pat := range []string{`(?m)a`, `(?x:a)`, `(?z)a`} {
+	for _, pat := range []string{`(?z)a`, `(?a:a)`, `(?im-u:a)`} {
 		if _, err := onigmo.Compile(pat); err == nil {
 			t.Errorf("Compile(%q): expected an error for an unsupported flag", pat)
 		}

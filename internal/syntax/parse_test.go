@@ -584,11 +584,11 @@ func TestParseInlineFlagOnClassAndBackref(t *testing.T) {
 
 func TestParseInlineFlagErrors(t *testing.T) {
 	for _, pat := range []string{
-		`(?m)a`,    // 'm' is not 'i'/'-': handled as unsupported group syntax
-		`(?x:a)`,   // ditto for 'x'
-		`(?im:a)`,  // a leading 'i' then an unsupported letter before ':'
-		`(?im)a`,   // a leading 'i' then an unsupported letter before ')'
-		`(?i-m:a)`, // unsupported flag letter after '-'
+		`(?a)b`,    // 'a' is not a recognised flag letter
+		`(?u:a)`,   // ditto for 'u' in a scoped group
+		`(?ia:a)`,  // a recognised 'i' then an unsupported letter before ':'
+		`(?im a)`,  // recognised i/m then an unsupported letter before the close
+		`(?i-a:a)`, // unsupported flag letter after '-'
 		`(?i`,      // EOF before ')' or ':'
 		`(?-`,      // EOF right after '-'
 		`(?i-`,     // EOF after the '-'

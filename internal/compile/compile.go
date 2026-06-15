@@ -13,7 +13,8 @@ type Op int
 const (
 	// OpChar matches the single byte B and advances.
 	OpChar Op = iota
-	// OpAny matches any byte except '\n' and advances.
+	// OpAny matches any byte and advances; unless DotAll is set it excludes
+	// '\n' (Ruby's /m option makes the dot match a newline too).
 	OpAny
 	// OpClass matches a byte in (or, if Negate, not in) Ranges and advances.
 	OpClass
@@ -59,6 +60,7 @@ type Inst struct {
 	Negate bool             // OpClass, OpLook
 	Behind bool             // OpLook
 	Fold   bool             // OpChar, OpClass (case-insensitive, /i)
+	DotAll bool             // OpAny (Ruby /m: the dot also matches '\n')
 	Min    int              // OpLook (lookbehind width lower bound)
 	Max    int              // OpLook (lookbehind width upper bound)
 }
@@ -107,7 +109,7 @@ func (b *builder) node(n ast.Node) {
 	case *ast.Literal:
 		b.emit(Inst{Op: OpChar, B: t.B, Fold: t.Fold})
 	case *ast.AnyChar:
-		b.emit(Inst{Op: OpAny})
+		b.emit(Inst{Op: OpAny, DotAll: t.DotAll})
 	case *ast.Class:
 		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Negate: t.Negate, Fold: t.Fold})
 	case *ast.Anchor:

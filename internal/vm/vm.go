@@ -92,7 +92,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 		case compile.OpAny:
-			if sp < len(m.input) && m.input[sp] != '\n' {
+			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
 				pc++
 				sp++
 				clear(m.visited)
@@ -257,7 +257,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 				continue
 			}
 		case compile.OpAny:
-			if sp < len(m.input) && m.input[sp] != '\n' {
+			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
 				pc++
 				sp++
 				clear(visited)

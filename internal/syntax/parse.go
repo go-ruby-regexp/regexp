@@ -12,11 +12,14 @@
 // [[:^name:]]) inside character classes, for the standard classes alpha, digit,
 // alnum, upper, lower, space, blank, cntrl, graph, print, punct, xdigit, and
 // word; their byte ranges match Onigmo's defaults for the ASCII byte space. It
-// also adds ASCII case-insensitive matching through the inline options (?i)
-// (a set directive scoped to the rest of the enclosing group), (?i:...) (a
-// scoped group), and (?-i) / (?i-i:...) to turn it off again; the fold flag is
-// recorded on literals, character classes, and backreferences. Only the i flag
-// is recognised so far — other inline flags are reported as syntax errors.
+// also adds the inline options (?flags) (a set directive scoped to the rest of
+// the enclosing group), (?flags:...) (a scoped group), and the (?-flags) /
+// (?f-f:...) turn-off forms, exactly as in Onigmo/Ruby. Three option letters are
+// recognised: i (ASCII case-insensitive matching — the fold flag is recorded on
+// literals, character classes, and backreferences), m (dot-all: the dot also
+// matches a newline), and x (extended/free-spacing: unescaped whitespace and #
+// comments in the pattern are ignored, except inside a character class). Any
+// other flag letter is reported as a syntax error.
 //
 // Lookbehind, as in Onigmo/Ruby, requires each alternative of its body to have
 // a constant byte width (different alternatives may differ, e.g. (?<=ab|c));
@@ -43,11 +46,14 @@ type Result struct {
 	Names      map[string]int
 }
 
-// flags holds the inline option state in effect at a point in the parse. Only
-// the case-insensitive option (i) is modelled so far; it is toggled by (?i) /
-// (?-i) and scoped by (?i:...) / (?-i:...), exactly as in Onigmo/Ruby.
+// flags holds the inline option state in effect at a point in the parse. Each
+// option is toggled by (?flags) / (?-flags) and scoped by (?flags:...), exactly
+// as in Onigmo/Ruby. Three options are modelled: i (case-insensitive), m
+// (dot-all: the dot matches a newline) and x (extended/free-spacing).
 type flags struct {
-	fold bool // case-insensitive matching (/i)
+	fold     bool // case-insensitive matching (i)
+	dotAll   bool // the dot matches '\n' too (m)
+	extended bool // extended mode: ignore unescaped whitespace and # comments (x)
 }
 
 // parser is a single-use recursive-descent parser over the pattern bytes.
@@ -84,6 +90,34 @@ func (p *parser) errorf(format string, args ...any) error {
 }
 
 func (p *parser) eof() bool { return p.pos >= len(p.src) }
+
+// skipExtended consumes the pattern bytes that extended/free-spacing mode (the x
+// option) ignores: the unescaped whitespace bytes Onigmo treats as insignificant
+// — space, tab, newline, form feed and carriage return (note: not the vertical
+// tab) — and '#' comments that run to the end of the line (or the pattern). It is
+// a no-op unless x is in effect, and it is never called inside a character class,
+// where those bytes are literal. Onigmo has one further idiosyncrasy this engine
+// does not reproduce: a '#' comment glued directly to an atom and immediately
+// followed by a quantifier (e.g. /(?x)a#c\n+/) is a syntax error there but is
+// accepted here as a+ after a comment; whitespace anywhere around the comment
+// makes Onigmo accept it too, so the divergence is confined to that one shape.
+func (p *parser) skipExtended() {
+	if !p.flags.extended {
+		return
+	}
+	for !p.eof() {
+		switch p.peek() {
+		case ' ', '\t', '\n', '\f', '\r':
+			p.next()
+		case '#':
+			for !p.eof() && p.peek() != '\n' {
+				p.next()
+			}
+		default:
+			return
+		}
+	}
+}
 
 func (p *parser) peek() byte { return p.src[p.pos] }
 
@@ -133,6 +167,7 @@ func (p *parser) parseConcat() (ast.Node, flags, error) {
 	var subs []ast.Node
 	prefix := p.flags
 	sawAtom := false
+	p.skipExtended()
 	for !p.eof() && p.peek() != '|' && p.peek() != ')' {
 		term, err := p.parseTerm()
 		if err != nil {
@@ -148,6 +183,10 @@ func (p *parser) parseConcat() (ast.Node, flags, error) {
 			// updated options as the branch's prefix baseline.
 			prefix = p.flags
 		}
+		// Skip insignificant whitespace/comments before the next atom so the loop
+		// condition sees the real next token (or the branch/group terminator). A
+		// (?x) directive in this branch enables this from here on.
+		p.skipExtended()
 	}
 	switch len(subs) {
 	case 0:
@@ -173,8 +212,11 @@ func (p *parser) parseTerm() (ast.Node, error) {
 	return p.parseQuantifier(atom)
 }
 
-// parseQuantifier applies a trailing *, +, ?, or {m,n} to atom, if present.
+// parseQuantifier applies a trailing *, +, ?, or {m,n} to atom, if present. In
+// extended mode the insignificant whitespace/comments between the atom and a
+// following quantifier are ignored, so e.g. /(?x)a *$/ applies * to a.
 func (p *parser) parseQuantifier(atom ast.Node) (ast.Node, error) {
+	p.skipExtended()
 	if p.eof() {
 		return atom, nil
 	}
@@ -256,7 +298,7 @@ func (p *parser) parseAtom() (ast.Node, error) {
 		return p.parseClass()
 	case '.':
 		p.next()
-		return &ast.AnyChar{}, nil
+		return &ast.AnyChar{DotAll: p.flags.dotAll}, nil
 	case '^':
 		p.next()
 		return &ast.Anchor{Kind: ast.AnchorBeginLine}, nil
@@ -305,7 +347,7 @@ func (p *parser) parseGroup() (ast.Node, error) {
 				return nil, err
 			}
 			name = n
-		case !p.eof() && (p.peek() == 'i' || p.peek() == '-'):
+		case !p.eof() && (p.peek() == 'i' || p.peek() == 'm' || p.peek() == 'x' || p.peek() == '-'):
 			return p.parseInlineFlags()
 		default:
 			return nil, p.errorf("unsupported group syntax")
@@ -348,8 +390,9 @@ func (p *parser) parseGroup() (ast.Node, error) {
 //	(?flags:body)   a scoped group: body is parsed under the modified options,
 //	                which are restored when the group closes.
 //
-// Only the i (case-insensitive) flag is supported; any other flag letter is a
-// syntax error. The optional '-' introduces the negated (turned-off) flags.
+// The i (case-insensitive), m (dot-all) and x (extended) flags are supported;
+// any other flag letter is a syntax error. The optional '-' introduces the
+// negated (turned-off) flags.
 func (p *parser) parseInlineFlags() (ast.Node, error) {
 	saved := p.flags
 	on, off, err := p.parseFlagLetters()
@@ -360,12 +403,7 @@ func (p *parser) parseInlineFlags() (ast.Node, error) {
 		return nil, p.errorf("unterminated inline options")
 	}
 	applied := saved
-	if on {
-		applied.fold = true
-	}
-	if off {
-		applied.fold = false
-	}
+	applied.apply(on, off)
 	// parseFlagLetters consumes up to (but not past) the terminator, which the
 	// EOF check above proved is present, so it is either ':' or ')'.
 	if p.next() == ')' {
@@ -389,24 +427,67 @@ func (p *parser) parseInlineFlags() (ast.Node, error) {
 	return &ast.Group{Sub: sub, Capture: false}, nil
 }
 
+// optSet records which inline option letters appeared in one run of an inline
+// option construct.
+type optSet struct {
+	fold, dotAll, extended bool
+}
+
+// add records flag letter c into the set, reporting whether it was a recognised
+// option letter.
+func (s *optSet) add(c byte) bool {
+	switch c {
+	case 'i':
+		s.fold = true
+	case 'm':
+		s.dotAll = true
+	case 'x':
+		s.extended = true
+	default:
+		return false
+	}
+	return true
+}
+
+// apply turns the options in on on and the options in off off, with off winning
+// (Ruby permits both in one construct, e.g. (?i-i:...), the trailing -i winning).
+func (f *flags) apply(on, off optSet) {
+	if on.fold {
+		f.fold = true
+	}
+	if on.dotAll {
+		f.dotAll = true
+	}
+	if on.extended {
+		f.extended = true
+	}
+	if off.fold {
+		f.fold = false
+	}
+	if off.dotAll {
+		f.dotAll = false
+	}
+	if off.extended {
+		f.extended = false
+	}
+}
+
 // parseFlagLetters reads the flag specification of an inline option construct: a
 // run of supported flag letters, then an optional '-' followed by another run of
-// letters to turn off. It reports whether i was switched on and whether it was
+// letters to turn off. It reports which options were switched on and which were
 // switched off (Ruby permits both, e.g. (?i-i:...), the later -i winning).
-func (p *parser) parseFlagLetters() (on, off bool, err error) {
+func (p *parser) parseFlagLetters() (on, off optSet, err error) {
 	for !p.eof() && p.peek() != '-' && p.peek() != ':' && p.peek() != ')' {
-		if p.next() != 'i' {
-			return false, false, p.errorf("unsupported inline option flag")
+		if !on.add(p.next()) {
+			return optSet{}, optSet{}, p.errorf("unsupported inline option flag")
 		}
-		on = true
 	}
 	if !p.eof() && p.peek() == '-' {
 		p.next()
 		for !p.eof() && p.peek() != ':' && p.peek() != ')' {
-			if p.next() != 'i' {
-				return false, false, p.errorf("unsupported inline option flag")
+			if !off.add(p.next()) {
+				return optSet{}, optSet{}, p.errorf("unsupported inline option flag")
 			}
-			off = true
 		}
 	}
 	return on, off, nil
@@ -572,6 +653,11 @@ func (p *parser) parseEscape() (ast.Node, error) {
 	case 'k':
 		return p.parseNamedBackref()
 	case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
+		return &ast.Literal{B: b}, nil
+	case ' ', '\t', '\n', '\f', '\r', '#':
+		// The whitespace bytes that extended mode skips, and '#', are literal when
+		// backslash-escaped — so /(?x)a\ b/ matches "a b". Onigmo accepts these
+		// escapes whether or not x is in effect, matching Ruby.
 		return &ast.Literal{B: b}, nil
 	default:
 		return nil, p.errorf("unsupported escape \\%c", b)

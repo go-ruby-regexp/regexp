@@ -19,8 +19,12 @@ type Literal struct {
 	Fold bool
 }
 
-// AnyChar matches any byte except a newline (the dot metacharacter).
-type AnyChar struct{}
+// AnyChar matches any byte (the dot metacharacter). By default a newline is
+// excluded; when DotAll is set (Ruby's /m option, set inline by (?m)) the dot
+// matches a newline as well.
+type AnyChar struct {
+	DotAll bool
+}
 
 // ClassRange is a single inclusive byte range inside a character class. A
 // single character c is represented as the range c..c.
