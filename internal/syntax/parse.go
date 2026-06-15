@@ -11,7 +11,12 @@
 // Phase 3 begins with POSIX bracket expressions [[:name:]] (and negated
 // [[:^name:]]) inside character classes, for the standard classes alpha, digit,
 // alnum, upper, lower, space, blank, cntrl, graph, print, punct, xdigit, and
-// word; their byte ranges match Onigmo's defaults for the ASCII byte space.
+// word; their byte ranges match Onigmo's defaults for the ASCII byte space. It
+// also adds ASCII case-insensitive matching through the inline options (?i)
+// (a set directive scoped to the rest of the enclosing group), (?i:...) (a
+// scoped group), and (?-i) / (?i-i:...) to turn it off again; the fold flag is
+// recorded on literals, character classes, and backreferences. Only the i flag
+// is recognised so far — other inline flags are reported as syntax errors.
 //
 // Lookbehind, as in Onigmo/Ruby, requires each alternative of its body to have
 // a constant byte width (different alternatives may differ, e.g. (?<=ab|c));
@@ -38,13 +43,21 @@ type Result struct {
 	Names      map[string]int
 }
 
+// flags holds the inline option state in effect at a point in the parse. Only
+// the case-insensitive option (i) is modelled so far; it is toggled by (?i) /
+// (?-i) and scoped by (?i:...) / (?-i:...), exactly as in Onigmo/Ruby.
+type flags struct {
+	fold bool // case-insensitive matching (/i)
+}
+
 // parser is a single-use recursive-descent parser over the pattern bytes.
 type parser struct {
 	src        string
 	pos        int
 	ncap       int
 	names      map[string]int
-	maxBackref int // largest numeric backreference seen, validated after parsing
+	maxBackref int   // largest numeric backreference seen, validated after parsing
+	flags      flags // inline option state at the cursor (e.g. /i via (?i))
 }
 
 // Parse compiles a pattern string into an AST. It returns an error wrapping
@@ -82,18 +95,28 @@ func (p *parser) next() byte {
 
 // parseAlternate parses a sequence of concatenations separated by '|'. It stops
 // at end of input or at a ')'.
+//
+// Inline option scoping follows Onigmo/Ruby: an option-setting directive (?i) /
+// (?-i) that appears as the leading prefix of a branch — before any atom is
+// consumed — updates the baseline options that subsequent branches of the same
+// alternation inherit; once a branch has consumed an atom, a later (?i) is local
+// to that branch only. So (?i)a|b folds b, but a(?i)|b does not.
 func (p *parser) parseAlternate() (ast.Node, error) {
-	first, err := p.parseConcat()
+	baseline := p.flags
+	first, prefix, err := p.parseConcat()
 	if err != nil {
 		return nil, err
 	}
+	baseline = prefix
 	subs := []ast.Node{first}
 	for !p.eof() && p.peek() == '|' {
 		p.next()
-		n, err := p.parseConcat()
+		p.flags = baseline
+		n, prefix, err := p.parseConcat()
 		if err != nil {
 			return nil, err
 		}
+		baseline = prefix
 		subs = append(subs, n)
 	}
 	if len(subs) == 1 {
@@ -102,31 +125,50 @@ func (p *parser) parseAlternate() (ast.Node, error) {
 	return &ast.Alternate{Subs: subs}, nil
 }
 
-// parseConcat parses a run of quantified terms until a '|', a ')', or EOF.
-func (p *parser) parseConcat() (ast.Node, error) {
+// parseConcat parses a run of quantified terms until a '|', a ')', or EOF. It
+// also returns the option state established by any leading inline-flag prefix
+// (the options in effect just before the first consuming atom), which the
+// alternation uses as the baseline for the following branch.
+func (p *parser) parseConcat() (ast.Node, flags, error) {
 	var subs []ast.Node
+	prefix := p.flags
+	sawAtom := false
 	for !p.eof() && p.peek() != '|' && p.peek() != ')' {
 		term, err := p.parseTerm()
 		if err != nil {
-			return nil, err
+			return nil, flags{}, err
 		}
-		subs = append(subs, term)
+		if term != nil {
+			// A consuming term ends the leading inline-flag prefix; further flag
+			// changes in this branch no longer propagate to sibling branches.
+			subs = append(subs, term)
+			sawAtom = true
+		} else if !sawAtom {
+			// A leading inline-flag directive (it emits no node): record the
+			// updated options as the branch's prefix baseline.
+			prefix = p.flags
+		}
 	}
 	switch len(subs) {
 	case 0:
-		return &ast.Empty{}, nil
+		return &ast.Empty{}, prefix, nil
 	case 1:
-		return subs[0], nil
+		return subs[0], prefix, nil
 	default:
-		return &ast.Concat{Subs: subs}, nil
+		return &ast.Concat{Subs: subs}, prefix, nil
 	}
 }
 
-// parseTerm parses a single atom followed by an optional quantifier.
+// parseTerm parses a single atom followed by an optional quantifier. It returns
+// a nil node (and no error) for an inline option-setting directive (?i)/(?-i),
+// which consumes input but produces no AST node and takes no quantifier.
 func (p *parser) parseTerm() (ast.Node, error) {
 	atom, err := p.parseAtom()
 	if err != nil {
 		return nil, err
+	}
+	if atom == nil {
+		return nil, nil
 	}
 	return p.parseQuantifier(atom)
 }
@@ -227,7 +269,7 @@ func (p *parser) parseAtom() (ast.Node, error) {
 		return nil, p.errorf("nothing to repeat: %q", b)
 	default:
 		p.next()
-		return &ast.Literal{B: b}, nil
+		return &ast.Literal{B: b, Fold: p.flags.fold}, nil
 	}
 }
 
@@ -263,6 +305,8 @@ func (p *parser) parseGroup() (ast.Node, error) {
 				return nil, err
 			}
 			name = n
+		case !p.eof() && (p.peek() == 'i' || p.peek() == '-'):
+			return p.parseInlineFlags()
 		default:
 			return nil, p.errorf("unsupported group syntax")
 		}
@@ -278,6 +322,10 @@ func (p *parser) parseGroup() (ast.Node, error) {
 			p.names[name] = index
 		}
 	}
+	// Options set by an inline (?i) directive inside the group are scoped to the
+	// group, so snapshot the entry options and restore them once the group body
+	// is parsed (e.g. in (a(?i))b the trailing b is not folded).
+	saved := p.flags
 	sub, err := p.parseAlternate()
 	if err != nil {
 		return nil, err
@@ -286,7 +334,82 @@ func (p *parser) parseGroup() (ast.Node, error) {
 		return nil, p.errorf("missing closing )")
 	}
 	p.next() // consume ')'
+	p.flags = saved
 	return &ast.Group{Sub: sub, Capture: capture, Index: index, Name: name}, nil
+}
+
+// parseInlineFlags parses an inline option construct whose "(?" has already been
+// consumed and whose cursor is at the first flag letter or '-'. Two forms are
+// recognised, matching Onigmo/Ruby:
+//
+//	(?flags)        a set directive: it changes the current options for the
+//	                remainder of the enclosing group and produces no AST node
+//	                (parseInlineFlags returns a nil node).
+//	(?flags:body)   a scoped group: body is parsed under the modified options,
+//	                which are restored when the group closes.
+//
+// Only the i (case-insensitive) flag is supported; any other flag letter is a
+// syntax error. The optional '-' introduces the negated (turned-off) flags.
+func (p *parser) parseInlineFlags() (ast.Node, error) {
+	saved := p.flags
+	on, off, err := p.parseFlagLetters()
+	if err != nil {
+		return nil, err
+	}
+	if p.eof() {
+		return nil, p.errorf("unterminated inline options")
+	}
+	applied := saved
+	if on {
+		applied.fold = true
+	}
+	if off {
+		applied.fold = false
+	}
+	// parseFlagLetters consumes up to (but not past) the terminator, which the
+	// EOF check above proved is present, so it is either ':' or ')'.
+	if p.next() == ')' {
+		// Set directive: mutate the options for the rest of the enclosing group
+		// and emit nothing.
+		p.flags = applied
+		return nil, nil
+	}
+	// Scoped group (?flags:body): parse the body under the new options, then
+	// restore them.
+	p.flags = applied
+	sub, err := p.parseAlternate()
+	if err != nil {
+		return nil, err
+	}
+	if p.eof() || p.peek() != ')' {
+		return nil, p.errorf("missing closing )")
+	}
+	p.next() // consume ')'
+	p.flags = saved
+	return &ast.Group{Sub: sub, Capture: false}, nil
+}
+
+// parseFlagLetters reads the flag specification of an inline option construct: a
+// run of supported flag letters, then an optional '-' followed by another run of
+// letters to turn off. It reports whether i was switched on and whether it was
+// switched off (Ruby permits both, e.g. (?i-i:...), the later -i winning).
+func (p *parser) parseFlagLetters() (on, off bool, err error) {
+	for !p.eof() && p.peek() != '-' && p.peek() != ':' && p.peek() != ')' {
+		if p.next() != 'i' {
+			return false, false, p.errorf("unsupported inline option flag")
+		}
+		on = true
+	}
+	if !p.eof() && p.peek() == '-' {
+		p.next()
+		for !p.eof() && p.peek() != ':' && p.peek() != ')' {
+			if p.next() != 'i' {
+				return false, false, p.errorf("unsupported inline option flag")
+			}
+			off = true
+		}
+	}
+	return on, off, nil
 }
 
 // parseLook parses the body of a lookaround assertion whose introducer (one of
@@ -294,6 +417,9 @@ func (p *parser) parseGroup() (ast.Node, error) {
 // ')'. behind and negate select the variant. Lookbehind sub-patterns must have
 // a constant byte width per alternative (see fixedWidth).
 func (p *parser) parseLook(behind, negate bool) (ast.Node, error) {
+	// Inline options set inside a lookaround body are scoped to it, like any
+	// other group.
+	saved := p.flags
 	sub, err := p.parseAlternate()
 	if err != nil {
 		return nil, err
@@ -302,6 +428,7 @@ func (p *parser) parseLook(behind, negate bool) (ast.Node, error) {
 		return nil, p.errorf("missing closing )")
 	}
 	p.next() // consume ')'
+	p.flags = saved
 	look := &ast.Look{Sub: sub, Behind: behind, Negate: negate}
 	if behind {
 		// Match Ruby/Onigmo: every alternative in a lookbehind must be of a
@@ -441,7 +568,7 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		if idx > p.maxBackref {
 			p.maxBackref = idx
 		}
-		return &ast.Backref{Index: idx}, nil
+		return &ast.Backref{Index: idx, Fold: p.flags.fold}, nil
 	case 'k':
 		return p.parseNamedBackref()
 	case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
@@ -465,7 +592,7 @@ func (p *parser) parseNamedBackref() (ast.Node, error) {
 	if !ok {
 		return nil, p.errorf("undefined group name <%s>", name)
 	}
-	return &ast.Backref{Index: idx}, nil
+	return &ast.Backref{Index: idx, Fold: p.flags.fold}, nil
 }
 
 // perlClass builds the Class node for one of the Perl class escapes \d \D \w \W
@@ -502,7 +629,7 @@ func spaceRanges() []ast.ClassRange {
 // parseClass parses a bracketed character class [...].
 func (p *parser) parseClass() (ast.Node, error) {
 	p.next() // consume '['
-	cls := &ast.Class{}
+	cls := &ast.Class{Fold: p.flags.fold}
 	if !p.eof() && p.peek() == '^' {
 		p.next()
 		cls.Negate = true

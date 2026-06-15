@@ -347,3 +347,79 @@ func TestLeftmostSearch(t *testing.T) {
 		t.Fatalf("leftmost = (%d,%d,%v)", b, e, ok)
 	}
 }
+
+func TestMatchFoldChar(t *testing.T) {
+	// (?i) folds ASCII letters in both directions; non-letters are unaffected.
+	for _, tc := range []struct {
+		pat, in string
+		want    bool
+	}{
+		{`(?i)abc`, "ABC", true},
+		{`(?i)ABC`, "abc", true},
+		{`(?i)aBc`, "AbC", true},
+		{`(?i)a5b`, "A5B", true},  // digit between folded letters
+		{`(?i)a5b`, "A6B", false}, // non-letter must still match exactly
+		{`(?i)abc`, "abd", false},
+		{`abc`, "ABC", false}, // no /i: case-sensitive
+	} {
+		if got := matchString(t, tc.pat, tc.in); got != tc.want {
+			t.Errorf("/%s/ on %q: got %v want %v", tc.pat, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchFoldClass(t *testing.T) {
+	for _, tc := range []struct {
+		pat, in string
+		want    bool
+	}{
+		{`(?i)[a-z]`, "A", true},       // swap finds it
+		{`(?i)[A-Z]`, "a", true},       // swap finds it (other direction)
+		{`(?i)[a-z]`, "a", true},       // already in set (no swap needed)
+		{`(?i)[a-z]`, "5", false},      // digit folds to itself, not in set
+		{`(?i)[^a-z]`, "A", false},     // negated: A folds into [a-z] => excluded
+		{`(?i)[^a-z]`, "5", true},      // negated: digit stays out => included
+		{`(?i)[m-p]`, "M", true},
+		{`(?i)[m-p]`, "Q", false},
+	} {
+		if got := matchString(t, tc.pat, tc.in); got != tc.want {
+			t.Errorf("/%s/ on %q: got %v want %v", tc.pat, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchFoldBackref(t *testing.T) {
+	// A backreference under /i compares case-insensitively.
+	for _, tc := range []struct {
+		pat, in string
+		want    bool
+	}{
+		{`(?i)(ab)\1`, "AbAB", true},
+		{`(?i)(ab)\1`, "Abac", false}, // second copy differs in a real letter
+		{`(?i)(ab)\1`, "Aba", false},  // too short to hold the backref
+		{`(ab)(?i)\1`, "abAB", true},  // capture unfolded, backref folded
+		{`(ab)\1`, "abAB", false},     // no /i anywhere: case-sensitive
+	} {
+		if got := matchString(t, tc.pat, tc.in); got != tc.want {
+			t.Errorf("/%s/ on %q: got %v want %v", tc.pat, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFoldInsideLookaround(t *testing.T) {
+	// Exercise the fold paths inside execLook (the lookaround sub-VM).
+	for _, tc := range []struct {
+		pat, in string
+		want    bool
+	}{
+		{`x(?=(?i)abc)`, "xABC", true},          // OpChar fold in lookahead
+		{`x(?=(?i)[a-z])`, "xA", true},          // OpClass fold in lookahead
+		{`(?i)(ab)(?=\1)`, "abAB", true},        // OpBackref fold in lookahead
+		{`(?<=(?i)abc)x`, "ABCx", true},         // OpChar fold in lookbehind
+		{`(?<=(?i)[a-z])x`, "Ax", true},         // OpClass fold in lookbehind
+	} {
+		if got := matchString(t, tc.pat, tc.in); got != tc.want {
+			t.Errorf("/%s/ on %q: got %v want %v", tc.pat, tc.in, got, tc.want)
+		}
+	}
+}

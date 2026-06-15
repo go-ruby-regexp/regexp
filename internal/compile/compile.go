@@ -58,6 +58,7 @@ type Inst struct {
 	Ranges []ast.ClassRange // OpClass
 	Negate bool             // OpClass, OpLook
 	Behind bool             // OpLook
+	Fold   bool             // OpChar, OpClass (case-insensitive, /i)
 	Min    int              // OpLook (lookbehind width lower bound)
 	Max    int              // OpLook (lookbehind width upper bound)
 }
@@ -104,11 +105,11 @@ func (b *builder) node(n ast.Node) {
 	case *ast.Empty:
 		// Nothing to emit.
 	case *ast.Literal:
-		b.emit(Inst{Op: OpChar, B: t.B})
+		b.emit(Inst{Op: OpChar, B: t.B, Fold: t.Fold})
 	case *ast.AnyChar:
 		b.emit(Inst{Op: OpAny})
 	case *ast.Class:
-		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Negate: t.Negate})
+		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Negate: t.Negate, Fold: t.Fold})
 	case *ast.Anchor:
 		b.anchor(t)
 	case *ast.Concat:
@@ -120,7 +121,7 @@ func (b *builder) node(n ast.Node) {
 	case *ast.Group:
 		b.group(t)
 	case *ast.Backref:
-		b.emit(Inst{Op: OpBackref, Slot: t.Index})
+		b.emit(Inst{Op: OpBackref, Slot: t.Index, Fold: t.Fold})
 	case *ast.Look:
 		b.look(t)
 	case *ast.Star:

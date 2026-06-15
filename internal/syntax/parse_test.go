@@ -477,3 +477,126 @@ func walk(n ast.Node, f func(ast.Node)) {
 		walk(t.Sub, f)
 	}
 }
+
+// foldStates collects the Fold flags of every Literal, Class, and Backref in an
+// AST, in walk order, for asserting inline-option scoping.
+func foldStates(n ast.Node) []bool {
+	var out []bool
+	walk(n, func(x ast.Node) {
+		switch t := x.(type) {
+		case *ast.Literal:
+			out = append(out, t.Fold)
+		case *ast.Class:
+			out = append(out, t.Fold)
+		case *ast.Backref:
+			out = append(out, t.Fold)
+		}
+	})
+	return out
+}
+
+func TestParseInlineFlagSetDirective(t *testing.T) {
+	// (?i) sets fold for the rest of the enclosing group; it emits no node, so
+	// "a(?i)b" is a 2-literal concat with only the second folded.
+	r := mustParse(t, "a(?i)b")
+	c, ok := r.Root.(*ast.Concat)
+	if !ok || len(c.Subs) != 2 {
+		t.Fatalf("expected concat of 2 (the directive emits no node), got %#v", r.Root)
+	}
+	if got := foldStates(r.Root); len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("fold states = %v, want [false true]", got)
+	}
+}
+
+func TestParseInlineFlagScopedGroup(t *testing.T) {
+	// (?i:...) is a non-capturing group whose body folds; the trailing literal
+	// outside it does not.
+	r := mustParse(t, "(?i:a)b")
+	c := r.Root.(*ast.Concat)
+	g, ok := c.Subs[0].(*ast.Group)
+	if !ok || g.Capture {
+		t.Fatalf("expected non-capturing group, got %#v", c.Subs[0])
+	}
+	if got := foldStates(r.Root); len(got) != 2 || !got[0] || got[1] {
+		t.Fatalf("fold states = %v, want [true false]", got)
+	}
+}
+
+func TestParseInlineFlagTurnOff(t *testing.T) {
+	// (?-i) turns folding back off; (?i-i:...) nets to off as well.
+	if got := foldStates(mustParse(t, "(?i)a(?-i)b").Root); len(got) != 2 || !got[0] || got[1] {
+		t.Fatalf("(?i)a(?-i)b fold = %v, want [true false]", got)
+	}
+	r := mustParse(t, "(?i-i:a)")
+	g := r.Root.(*ast.Group)
+	if lit := g.Sub.(*ast.Literal); lit.Fold {
+		t.Fatalf("(?i-i:a) body should not fold")
+	}
+}
+
+func TestParseInlineFlagScopeDoesNotLeak(t *testing.T) {
+	// A (?i) inside a group must not affect a sibling after the group closes.
+	if got := foldStates(mustParse(t, "(a(?i)b)c").Root); len(got) != 3 || got[0] || !got[1] || got[2] {
+		t.Fatalf("(a(?i)b)c fold = %v, want [false true false]", got)
+	}
+	// Nor must it leak out of a lookaround body.
+	if got := foldStates(mustParse(t, "(?=a(?i))b").Root); len(got) != 2 || got[0] || got[1] {
+		t.Fatalf("(?=a(?i))b fold = %v, want [false false]", got)
+	}
+}
+
+func TestParseInlineFlagBranchPropagation(t *testing.T) {
+	// A leading (?i) prefix of a branch propagates to later branches; one set
+	// after a consuming atom does not.
+	if got := foldStates(mustParse(t, "(?i)a|b").Root); len(got) != 2 || !got[0] || !got[1] {
+		t.Fatalf("(?i)a|b fold = %v, want [true true]", got)
+	}
+	if got := foldStates(mustParse(t, "x(?i)y|z").Root); len(got) != 3 || got[0] || !got[1] || got[2] {
+		t.Fatalf("x(?i)y|z fold = %v, want [false true false]", got)
+	}
+	if got := foldStates(mustParse(t, "a|(?i)b|c").Root); len(got) != 3 || got[0] || !got[1] || !got[2] {
+		t.Fatalf("a|(?i)b|c fold = %v, want [false true true]", got)
+	}
+}
+
+func TestParseInlineFlagOnClassAndBackref(t *testing.T) {
+	// The fold flag reaches character classes and backreferences too.
+	r := mustParse(t, `(?i)(a)[b]\1`)
+	var sawClass, sawRef bool
+	walk(r.Root, func(x ast.Node) {
+		if cls, ok := x.(*ast.Class); ok {
+			sawClass = true
+			if !cls.Fold {
+				t.Fatal("class under (?i) should fold")
+			}
+		}
+		if ref, ok := x.(*ast.Backref); ok {
+			sawRef = true
+			if !ref.Fold {
+				t.Fatal("backref under (?i) should fold")
+			}
+		}
+	})
+	if !sawClass || !sawRef {
+		t.Fatalf("expected a class and a backref in the AST (class=%v ref=%v)", sawClass, sawRef)
+	}
+}
+
+func TestParseInlineFlagErrors(t *testing.T) {
+	for _, pat := range []string{
+		`(?m)a`,    // 'm' is not 'i'/'-': handled as unsupported group syntax
+		`(?x:a)`,   // ditto for 'x'
+		`(?im:a)`,  // a leading 'i' then an unsupported letter before ':'
+		`(?im)a`,   // a leading 'i' then an unsupported letter before ')'
+		`(?i-m:a)`, // unsupported flag letter after '-'
+		`(?i`,      // EOF before ')' or ':'
+		`(?-`,      // EOF right after '-'
+		`(?i-`,     // EOF after the '-'
+		`(?i:a`,    // scoped group body runs to EOF without a closing ')'
+		`(?i:\q)`,  // a parse error inside a scoped-group body propagates out
+	} {
+		if _, err := Parse(pat); !errors.Is(err, ErrSyntax) {
+			t.Errorf("Parse(%q): expected ErrSyntax, got %v", pat, err)
+		}
+	}
+}

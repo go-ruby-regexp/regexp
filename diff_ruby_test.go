@@ -150,6 +150,25 @@ var diffCorpus = []rubyCase{
 	{`[[:^digit:]]+`, "12ab34"},
 	{`[^[:space:]]+`, "  hi there "},
 	{`[x[:digit:]]+`, "x1y2"},
+
+	// Case-insensitive matching via inline (?i) (Phase 3).
+	{`(?i)abc`, "xxABCyy"},
+	{`(?i)ABC`, "abc"},
+	{`(?i:abc)d`, "ABCd"},
+	{`(?i:abc)d`, "ABCD"},
+	{`a(?i)bc`, "aBC"},
+	{`a(?i)bc`, "ABC"},
+	{`(?i)a(?-i)b`, "AB"},
+	{`(a(?i)b)c`, "aBc"},
+	{`(?i)a|b`, "B"},
+	{`a(?i)|b`, "B"},
+	{`a|(?i)b|c`, "C"},
+	{`(?i)[a-z]+`, "ABCdef"},
+	{`(?i)[^a-z]+`, "ABC123"},
+	{`(?i)[m-p]`, "Q"},
+	{`(?i)(ab)\1`, "AbAB"},
+	{`(ab)(?i)\1`, "abAB"},
+	{`(?i)(?<g>ab)\k<g>`, "ABab"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

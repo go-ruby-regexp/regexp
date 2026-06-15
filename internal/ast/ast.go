@@ -11,9 +11,12 @@ type Node interface {
 	isNode()
 }
 
-// Literal matches a single byte exactly.
+// Literal matches a single byte exactly. When Fold is set (case-insensitive
+// mode, /i) and B is an ASCII letter, the byte of the opposite case matches as
+// well.
 type Literal struct {
-	B byte
+	B    byte
+	Fold bool
 }
 
 // AnyChar matches any byte except a newline (the dot metacharacter).
@@ -25,10 +28,13 @@ type ClassRange struct {
 	Lo, Hi byte
 }
 
-// Class is a character class: a set of byte ranges, optionally negated.
+// Class is a character class: a set of byte ranges, optionally negated. When
+// Fold is set (case-insensitive mode, /i), membership is tested against both an
+// input byte and its ASCII-case counterpart before Negate is applied.
 type Class struct {
 	Ranges []ClassRange
 	Negate bool
+	Fold   bool
 }
 
 // AnchorKind enumerates the zero-width anchors supported in Phase 0.
@@ -87,9 +93,11 @@ type Group struct {
 }
 
 // Backref matches the same text previously captured by group Index
-// (\1..\9, or \k<name>).
+// (\1..\9, or \k<name>). When Fold is set (case-insensitive mode, /i), the
+// comparison is ASCII case-insensitive.
 type Backref struct {
 	Index int
+	Fold  bool
 }
 
 // Look is a zero-width lookaround assertion. Behind selects lookbehind over

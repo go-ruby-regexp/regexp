@@ -5,6 +5,7 @@ package vm
 import (
 	"errors"
 
+	"github.com/go-onigmo/regexp/internal/ast"
 	"github.com/go-onigmo/regexp/internal/compile"
 )
 
@@ -84,7 +85,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 		in := m.prog.Insts[pc]
 		switch in.Op {
 		case compile.OpChar:
-			if sp < len(m.input) && m.input[sp] == in.B {
+			if sp < len(m.input) && charMatch(in, m.input[sp]) {
 				pc++
 				sp++
 				clear(m.visited)
@@ -177,7 +178,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 			ref := m.input[bgn:end]
-			if sp+len(ref) <= len(m.input) && m.input[sp:sp+len(ref)] == ref {
+			if sp+len(ref) <= len(m.input) && bytesEqual(m.input[sp:sp+len(ref)], ref, in.Fold) {
 				pc++
 				sp += len(ref)
 				if len(ref) > 0 {
@@ -249,7 +250,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		in := m.prog.Insts[pc]
 		switch in.Op {
 		case compile.OpChar:
-			if sp < len(m.input) && m.input[sp] == in.B {
+			if sp < len(m.input) && charMatch(in, m.input[sp]) {
 				pc++
 				sp++
 				clear(visited)
@@ -337,7 +338,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 				continue
 			}
 			ref := m.input[bgn:end]
-			if sp+len(ref) <= len(m.input) && m.input[sp:sp+len(ref)] == ref {
+			if sp+len(ref) <= len(m.input) && bytesEqual(m.input[sp:sp+len(ref)], ref, in.Fold) {
 				pc++
 				sp += len(ref)
 				if len(ref) > 0 {
@@ -378,14 +379,62 @@ func (m *machine) push(pc, sp int, caps []int) {
 	m.stack = append(m.stack, thread{pc: pc, sp: sp, caps: snap})
 }
 
+// charMatch reports whether input byte b is accepted by an OpChar instruction.
+// Under case-insensitive matching (Fold), an ASCII letter also matches the byte
+// of the opposite case.
+func charMatch(in compile.Inst, b byte) bool {
+	return b == in.B || (in.Fold && swapASCIICase(b) == in.B)
+}
+
 // classMatch reports whether byte b is accepted by an OpClass instruction.
+// Under case-insensitive matching (Fold), membership is tested for both b and
+// its ASCII-case counterpart before the class's Negate flag is applied — so e.g.
+// (?i)[a-z] accepts 'A' and (?i)[^a-z] rejects it.
 func classMatch(in compile.Inst, b byte) bool {
-	inSet := false
-	for _, r := range in.Ranges {
-		if b >= r.Lo && b <= r.Hi {
-			inSet = true
-			break
-		}
+	inSet := rangesContain(in.Ranges, b)
+	if in.Fold && !inSet {
+		inSet = rangesContain(in.Ranges, swapASCIICase(b))
 	}
 	return inSet != in.Negate
+}
+
+// bytesEqual reports whether the equal-length strings a and b are equal. When
+// fold is set the comparison is ASCII case-insensitive (used by a backreference
+// under /i). Callers pass slices of identical length (the OpBackref handler
+// length-checks before calling), so only the per-byte comparison varies.
+func bytesEqual(a, b string, fold bool) bool {
+	if !fold {
+		return a == b
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] && swapASCIICase(a[i]) != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// rangesContain reports whether byte b falls in any of the inclusive ranges.
+func rangesContain(ranges []ast.ClassRange, b byte) bool {
+	for _, r := range ranges {
+		if b >= r.Lo && b <= r.Hi {
+			return true
+		}
+	}
+	return false
+}
+
+// swapASCIICase returns b with its ASCII letter case flipped (A-Z <-> a-z); any
+// other byte is returned unchanged. Folding is intentionally ASCII-only: the
+// engine is byte-oriented and Unicode case-folding belongs to the later
+// rune-level work.
+func swapASCIICase(b byte) byte {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return b + ('a' - 'A')
+	case b >= 'a' && b <= 'z':
+		return b - ('a' - 'A')
+	default:
+		return b
+	}
 }

@@ -181,3 +181,38 @@ func TestCompileAlternateLinks(t *testing.T) {
 		t.Fatalf("3-way alternation needs two Split and two Jmp: %+v", p.Insts)
 	}
 }
+
+func TestCompileFoldFlagPropagates(t *testing.T) {
+	// (?i) must set Fold on the emitted OpChar, OpClass, and OpBackref.
+	p := compilePattern(t, `(?i)(a)[b]\1`)
+	var char, class, ref *Inst
+	for i := range p.Insts {
+		switch p.Insts[i].Op {
+		case OpChar:
+			if char == nil {
+				char = &p.Insts[i]
+			}
+		case OpClass:
+			class = &p.Insts[i]
+		case OpBackref:
+			ref = &p.Insts[i]
+		}
+	}
+	if char == nil || !char.Fold {
+		t.Errorf("OpChar Fold not set: %#v", char)
+	}
+	if class == nil || !class.Fold {
+		t.Errorf("OpClass Fold not set: %#v", class)
+	}
+	if ref == nil || !ref.Fold {
+		t.Errorf("OpBackref Fold not set: %#v", ref)
+	}
+
+	// Without (?i) the flags stay clear.
+	q := compilePattern(t, `(a)[b]\1`)
+	for _, in := range q.Insts {
+		if (in.Op == OpChar || in.Op == OpClass || in.Op == OpBackref) && in.Fold {
+			t.Errorf("Fold should be clear without (?i): %#v", in)
+		}
+	}
+}
