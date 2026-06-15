@@ -132,8 +132,25 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   forming the *leading prefix* of an alternation branch propagates to later
   branches (`(?i)a|b` folds `b`) whereas one set after a consuming atom does not
   (`a(?i)|b` does not). Folding is byte-oriented and ASCII-only: Unicode
-  case-folding is part of the later rune-level work. Inline flags other than `i`
-  (e.g. `m`, `x`) are not yet recognised and are reported as syntax errors.
+  case-folding is part of the later rune-level work.
+
+  **Inline flags `m` and `x`** ✅ *done* — the same inline-option machinery now
+  also carries `m` (dot-all: the dot `.` matches a newline too, Ruby's `/m`) and
+  `x` (extended/free-spacing). All three letters share the `(?flags)` set
+  directive, the `(?flags:…)` scoped group, and the `(?-flags)` / `(?f-f:…)`
+  turn-off forms, with the same alternation-prefix propagation rule as `i`. For
+  `m`, the dot's newline exclusion is dropped (`(?m).` matches `\n`); note that
+  `^`/`$` are *always* per-line in Ruby and need no flag. For `x`, the parser
+  skips the insignificant whitespace bytes Onigmo ignores — space, tab, newline,
+  form feed and carriage return (not the vertical tab) — and `#` comments running
+  to end of line, both at atom boundaries and between an atom and a following
+  quantifier (`(?x)a *` applies `*` to `a`); inside a character class those bytes
+  are literal, and `\ ` / `\#` (and the other escaped whitespace bytes) are
+  literal everywhere. One Onigmo idiosyncrasy is *not* reproduced: a `#` comment
+  glued directly to an atom and immediately followed by a quantifier (e.g.
+  `/(?x)a#c\n+/`) is a syntax error in Onigmo but is accepted here as `a+` after
+  a comment; any whitespace around the comment makes Onigmo accept it too, so the
+  divergence is confined to that one shape.
 
   Still to come in Phase 3: Unicode `\p{…}` property classes (which need
   rune-level matching, a larger change to the currently byte-oriented VM),

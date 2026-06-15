@@ -19,10 +19,12 @@
 // in Onigmo/Ruby; variable-width lookbehind is rejected. Phase 3 begins with
 // POSIX bracket classes [[:name:]] (and negated [[:^name:]]) inside character
 // classes, for the 14 standard names alpha, digit, alnum, upper, lower, space,
-// blank, cntrl, graph, print, punct, xdigit, and word; and ASCII case-insensitive
-// matching through the inline (?i) and (?i:...) options (with (?-i) to turn it
-// back off), which fold ASCII letters in literals, character classes, and
-// backreferences. Folding is byte-oriented and ASCII-only; Unicode property
-// classes and Unicode case-folding arrive with the later rune-level work. See
-// docs/plan-regexp.md for the full roadmap.
+// blank, cntrl, graph, print, punct, xdigit, and word; and the inline options
+// (?flags) / (?flags:...) (with the (?-flags) turn-off form) for the letters i
+// (ASCII case-insensitive matching, folding ASCII letters in literals, character
+// classes, and backreferences), m (dot-all: the dot also matches a newline), and
+// x (extended/free-spacing: unescaped whitespace and # comments in the pattern
+// are ignored, except inside a character class). Folding is byte-oriented and
+// ASCII-only; Unicode property classes and Unicode case-folding arrive with the
+// later rune-level work. See docs/plan-regexp.md for the full roadmap.
 package onigmo
