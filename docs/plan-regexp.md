@@ -329,8 +329,26 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   differential corpus (substring-compared) plus oracle-independent unit tests
   covering every branch including the binary-mode range-error paths.
 
-  Still to come in multi-encoding: **per-encoding cursors beyond UTF-8 /
-  ASCII-8BIT** (UTF-16/32, EUC, Shift_JIS), each its own increment.
+  **Per-encoding cursors beyond UTF-8 / ASCII-8BIT** (UTF-16/32, EUC-JP,
+  Shift_JIS, …) are **deliberately out of scope**, a documented boundary like
+  full/special case folding. The two cursors the engine ships — a UTF-8
+  char-advancing cursor and a one-byte binary cursor — cover the encodings a
+  Go-native engine actually receives: a Go `string`/`[]byte` is UTF-8 by
+  convention, and a caller holding text in a legacy or wide encoding transcodes
+  it to UTF-8 at the boundary (the standard `golang.org/x/text/encoding` idiom)
+  before matching, then maps the engine's byte offsets back. MRI carries
+  per-encoding regexp engines for historical Ruby `String#encoding`
+  compatibility that this from-scratch byte-oriented engine does not inherit;
+  reproducing them would weave a stateful multi-width cursor (with its own
+  boundary, `\R`, lookbehind-width and prefilter rules) through the VM for no
+  practical Go use case. Should a concrete need arise, the `Encoding` enum and
+  the `Program.Enc`-keyed cursor switch are the single extension point — the
+  multi-byte class machinery added here is already encoding-agnostic over code
+  points — so it remains a clean future increment rather than a missing piece.
+
+  With the UTF-8 char-advancing cursor, binary mode, and literal multi-byte
+  class members in place, the **multi-encoding work is complete** for the
+  engine's supported encodings.
 - **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
   wall-clock timeout), optimizer (✅ start-position prefilter: anchors, literal
   prefixes, first-byte sets, alternation-aware; ✅ required-interior-literal

@@ -80,7 +80,9 @@
 // ASCII range with a multi-byte member, and a range may span ASCII into the
 // multi-byte space ([a-é]); in ASCII8BIT mode such a member stays byte-oriented
 // ([é] is its two raw bytes). Per-encoding cursors beyond UTF-8 and ASCII-8BIT
-// (UTF-16/32, EUC, Shift_JIS) remain follow-ups.
+// (UTF-16/32, EUC, Shift_JIS) are deliberately out of scope: a Go string is
+// UTF-8 by convention, and text in a legacy or wide encoding is transcoded to
+// UTF-8 at the boundary before matching.
 //
 // Phase 3 also adds the hex-digit class \h (Onigmo's [0-9A-Fa-f]) and its
 // byte-complement \H — usable standalone or inside a character class, and

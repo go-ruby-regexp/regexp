@@ -100,7 +100,9 @@ It is the regexp backend for
 > a mixed class such as `[a-zé]` combines an ASCII range with a multi-byte member,
 > and a range may span ASCII into the multi-byte space (`[a-é]`). In `ASCII8BIT`
 > mode such a member stays byte-oriented (`[é]` is its two raw bytes). Encodings
-> beyond UTF-8 / ASCII-8BIT are follow-ups.
+> beyond UTF-8 / ASCII-8BIT (UTF-16/32, EUC, Shift_JIS) are out of scope: a Go
+> string is UTF-8 by convention, so legacy/wide text is transcoded to UTF-8 at
+> the boundary before matching.
 >
 > **Subexpression calls (`\g<…>`).** `\g<name>`, `\g<n>`, relative `\g<+n>` /
 > `\g<-n>`, and `\g<0>` (whole-pattern recursion) **re-run and re-capture** the
