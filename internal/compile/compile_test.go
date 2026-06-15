@@ -202,14 +202,15 @@ func TestCompileHasBackref(t *testing.T) {
 }
 
 func TestCompileFoldFlagPropagates(t *testing.T) {
-	// (?i) must set Fold on the emitted OpChar, OpClass, and OpBackref.
+	// (?i) must lower a letter literal to the rune-aware OpFoldChar and set Fold on
+	// the emitted OpClass and OpBackref.
 	p := compilePattern(t, `(?i)(a)[b]\1`)
-	var char, class, ref *Inst
+	var foldChar, class, ref *Inst
 	for i := range p.Insts {
 		switch p.Insts[i].Op {
-		case OpChar:
-			if char == nil {
-				char = &p.Insts[i]
+		case OpFoldChar:
+			if foldChar == nil {
+				foldChar = &p.Insts[i]
 			}
 		case OpClass:
 			class = &p.Insts[i]
@@ -217,8 +218,8 @@ func TestCompileFoldFlagPropagates(t *testing.T) {
 			ref = &p.Insts[i]
 		}
 	}
-	if char == nil || !char.Fold {
-		t.Errorf("OpChar Fold not set: %#v", char)
+	if foldChar == nil || foldChar.Rune != 'a' {
+		t.Errorf("OpFoldChar for 'a' not emitted: %#v", foldChar)
 	}
 	if class == nil || !class.Fold {
 		t.Errorf("OpClass Fold not set: %#v", class)
@@ -227,10 +228,13 @@ func TestCompileFoldFlagPropagates(t *testing.T) {
 		t.Errorf("OpBackref Fold not set: %#v", ref)
 	}
 
-	// Without (?i) the flags stay clear.
+	// Without (?i) the letter stays a byte OpChar and the flags stay clear.
 	q := compilePattern(t, `(a)[b]\1`)
 	for _, in := range q.Insts {
-		if (in.Op == OpChar || in.Op == OpClass || in.Op == OpBackref) && in.Fold {
+		if in.Op == OpFoldChar {
+			t.Errorf("OpFoldChar should not be emitted without (?i): %#v", in)
+		}
+		if (in.Op == OpClass || in.Op == OpBackref) && in.Fold {
 			t.Errorf("Fold should be clear without (?i): %#v", in)
 		}
 	}

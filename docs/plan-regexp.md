@@ -121,18 +121,41 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   non-ASCII-letter byte — the byte-oriented behaviour MRI exhibits on
   ASCII-8BIT strings.
 
-  **Case-folding (`/i`)** ✅ *done (ASCII)* — ASCII case-insensitive matching
-  via the inline options `(?i)` (a set directive that applies to the rest of the
-  enclosing group), `(?i:…)` (a scoped non-capturing group), and `(?-i)` /
-  `(?i-i:…)` (turning folding back off). Under folding, an `OpChar` for an ASCII
-  letter also matches the opposite-case byte, an `OpClass` tests membership for
-  both an input byte and its ASCII-case counterpart before applying negation (so
-  `(?i)[^a-z]` excludes `A`), and a backreference compares case-insensitively.
+  **Case-folding (`/i`)** ✅ *done (literals + classes are rune-level; backrefs
+  ASCII)* — case-insensitive matching via the inline options `(?i)` (a set
+  directive that applies to the rest of the enclosing group), `(?i:…)` (a scoped
+  non-capturing group), and `(?-i)` / `(?i-i:…)` (turning folding back off).
   Scoping follows Onigmo/Ruby exactly, including the subtle rule that a `(?i)`
   forming the *leading prefix* of an alternation branch propagates to later
   branches (`(?i)a|b` folds `b`) whereas one set after a consuming atom does not
-  (`a(?i)|b` does not). Folding is byte-oriented and ASCII-only: Unicode
-  case-folding is part of the later rune-level work.
+  (`a(?i)|b` does not).
+
+  **Rune-level folding (literals and classes).** Under `/i`, a literal character
+  and a character class fold **rune-aware** using Go's `unicode.SimpleFold` —
+  *simple (1:1)* Unicode case folding. The parser lowers a folded character that
+  has a case partner (every ASCII letter, and many non-ASCII letters) to a
+  rune-aware `FoldLiteral`/`OpFoldChar`, which decodes one UTF-8 code point and
+  accepts it when it is in the same simple-case-folding orbit as the pattern code
+  point. So `/É/i` matches `é`, `/Σ/i` matches `σ` and the final-sigma `ς`,
+  Cyrillic and Greek case pairs fold, and even an ASCII `/k/i` matches the Kelvin
+  sign U+212A and `/s/i` the long s ſ — exactly as MRI. A folded **class**
+  becomes rune-aware: a decoded input code point is in the class when it, or any
+  rune in its fold orbit, lies in a range or satisfies a `\p{…}` member, so
+  `(?i)[a-z]` matches `A` and the Kelvin sign, `(?i)[α-ω]` matches an uppercase
+  Greek letter, multi-byte members and ranges work (`(?i)[é]`, `(?i)[Α-Ω]`,
+  `(?i)[a-é]`), and negation is applied last (`(?i)[^é]` excludes `É`). A folded
+  rune atom obeys the same rune/byte boundary as `\p{…}`: it refuses to match at a
+  UTF-8 continuation byte, match **offsets stay byte offsets**, and — because its
+  byte width varies (e.g. `k` vs the 3-byte Kelvin sign) — it is rejected inside a
+  fixed-width lookbehind, like a property atom.
+
+  **Folding boundary.** Only *simple (1:1)* case folding is done. **Full/special
+  case folding is deliberately out of scope**: multi-character expansions such as
+  `ß`→`ss` and locale-specific rules such as Turkish dotless-`ı`/dotted-`İ` are
+  not implemented (Onigmo/Ruby do apply some of these; this engine does not).
+  **Backreference folding remains ASCII-only** by design — a backref under `/i`
+  compares its captured bytes case-insensitively over ASCII letters, not via the
+  rune-level orbit; a multi-byte case partner in a backref is not folded.
 
   **Inline flags `m` and `x`** ✅ *done* — the same inline-option machinery now
   also carries `m` (dot-all: the dot `.` matches a newline too, Ruby's `/m`) and
@@ -185,8 +208,8 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   numeric span on multi-byte input, so the differential tests compare matched
   substrings for the UTF-8 corpus and exact spans for the ASCII corpus.
 
-  Still to come in Phase 3: Unicode case-folding (rune-level `/i`) and
-  multi-encoding support.
+  Still to come in Phase 3: multi-encoding support (the rune-level `/i`
+  case-folding above is now done for literals and classes).
 - **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,
   literal prefixes), benchmarks.
 

@@ -102,3 +102,49 @@ func Match(name string, negate bool, r rune) bool {
 	}
 	return pred(r) != negate
 }
+
+// FoldEqual reports whether runes a and b are equal under simple (1:1) Unicode
+// case folding — that is, whether they belong to the same simple-case-folding
+// orbit. The orbit is the cycle Go's unicode.SimpleFold walks (e.g. k → K →
+// Kelvin-sign → k, or Σ → ς → σ → Σ), so FoldEqual('k', 0x212A) and
+// FoldEqual('É', 'é') are both true. This is the engine's rune-level /i model;
+// full/special case folding (multi-character expansions such as ß→"ss" and
+// locale-specific rules such as Turkish dotless-i) is deliberately out of scope.
+func FoldEqual(a, b rune) bool {
+	if a == b {
+		return true
+	}
+	// Walk a's orbit; if b appears, they fold-match. SimpleFold cycles back to
+	// the starting rune, so the loop is finite.
+	for f := unicode.SimpleFold(a); f != a; f = unicode.SimpleFold(f) {
+		if f == b {
+			return true
+		}
+	}
+	return false
+}
+
+// foldOrbit returns r together with every other rune in its simple-case-folding
+// orbit, used to test a code point against a folded character-class range.
+func foldOrbit(r rune) []rune {
+	orbit := []rune{r}
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		orbit = append(orbit, f)
+	}
+	return orbit
+}
+
+// FoldRangeContains reports whether code point r is in the inclusive range
+// [lo,hi] under simple case folding: r matches if r, or any rune in r's
+// simple-case-folding orbit, lies within the range. So FoldRangeContains tests
+// "A" against the range "a".."z" (folding to lowercase) and the Kelvin sign
+// against the same range (its orbit includes ASCII "k"). The class machinery uses
+// this so (?i)[a-z] and (?i)[α-ω] match their opposite-case members.
+func FoldRangeContains(r, lo, hi rune) bool {
+	for _, f := range foldOrbit(r) {
+		if f >= lo && f <= hi {
+			return true
+		}
+	}
+	return false
+}

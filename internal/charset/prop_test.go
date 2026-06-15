@@ -90,3 +90,50 @@ func TestMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestFoldEqual checks simple (1:1) case-folding orbit membership, including the
+// non-trivial orbits ASCII letters share with their Unicode case partners (the
+// Kelvin sign for "k", LATIN SMALL LETTER LONG S for "s") and the three-member
+// Greek sigma orbit.
+func TestFoldEqual(t *testing.T) {
+	for _, tc := range []struct {
+		a, b rune
+		want bool
+	}{
+		{'a', 'a', true},      // identity
+		{'A', 'a', true},      // ASCII case
+		{'a', 'A', true},      // ASCII case, other direction
+		{'É', 'é', true},      // Latin-1 accented pair
+		{'k', 0x212A, true},   // "k" ↔ KELVIN SIGN
+		{'s', 0x017F, true},   // "s" ↔ LATIN SMALL LETTER LONG S
+		{'Σ', 'ς', true},      // Greek sigma orbit member
+		{'ς', 'σ', true},      // and another member of the same orbit
+		{'a', 'b', false},     // different letters never fold-match
+		{'a', '5', false},     // letter vs digit
+		{'é', 'e', false},     // accent is significant (simple folding)
+	} {
+		if got := FoldEqual(tc.a, tc.b); got != tc.want {
+			t.Errorf("FoldEqual(%q,%q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// TestFoldRangeContains checks folded code-point range membership in both
+// directions and for a non-ASCII case partner reaching an ASCII range.
+func TestFoldRangeContains(t *testing.T) {
+	for _, tc := range []struct {
+		r, lo, hi rune
+		want      bool
+	}{
+		{'A', 'a', 'z', true},    // upper-case input matches a lower-case range
+		{'m', 'a', 'z', true},    // direct membership
+		{0x212A, 'a', 'z', true}, // KELVIN SIGN folds into [a-z]
+		{'Δ', 'α', 'ω', true},    // upper Greek into a lower Greek range
+		{'5', 'a', 'z', false},   // a digit is in no letter range
+		{'é', 'a', 'z', false},   // a non-ASCII letter is outside the ASCII range
+	} {
+		if got := FoldRangeContains(tc.r, tc.lo, tc.hi); got != tc.want {
+			t.Errorf("FoldRangeContains(%q,%q,%q) = %v, want %v", tc.r, tc.lo, tc.hi, got, tc.want)
+		}
+	}
+}

@@ -478,14 +478,18 @@ func walk(n ast.Node, f func(ast.Node)) {
 	}
 }
 
-// foldStates collects the Fold flags of every Literal, Class, and Backref in an
-// AST, in walk order, for asserting inline-option scoping.
+// foldStates collects the fold state of every character atom, class, and backref
+// in an AST, in walk order, for asserting inline-option scoping. A letter under
+// /i is parsed as a rune-aware FoldLiteral (folded), a non-folding character as a
+// plain Literal (not folded); a Class and a Backref carry an explicit Fold flag.
 func foldStates(n ast.Node) []bool {
 	var out []bool
 	walk(n, func(x ast.Node) {
 		switch t := x.(type) {
 		case *ast.Literal:
-			out = append(out, t.Fold)
+			out = append(out, false)
+		case *ast.FoldLiteral:
+			out = append(out, true)
 		case *ast.Class:
 			out = append(out, t.Fold)
 		case *ast.Backref:
@@ -529,8 +533,10 @@ func TestParseInlineFlagTurnOff(t *testing.T) {
 	}
 	r := mustParse(t, "(?i-i:a)")
 	g := r.Root.(*ast.Group)
-	if lit := g.Sub.(*ast.Literal); lit.Fold {
-		t.Fatalf("(?i-i:a) body should not fold")
+	// Net folding is off, so the body is a plain (non-folding) byte Literal, not a
+	// rune-aware FoldLiteral.
+	if _, ok := g.Sub.(*ast.Literal); !ok {
+		t.Fatalf("(?i-i:a) body should be a plain Literal, got %#v", g.Sub)
 	}
 }
 

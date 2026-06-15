@@ -407,19 +407,31 @@ func TestMatchFoldBackref(t *testing.T) {
 }
 
 func TestFoldInsideLookaround(t *testing.T) {
-	// Exercise the fold paths inside execLook (the lookaround sub-VM).
+	// Exercise the rune-aware fold paths inside execLook (the lookaround sub-VM).
+	// Only lookahead is tested: a folded atom is rune-aware and so of variable byte
+	// width, which a fixed-width lookbehind rejects at parse time (see
+	// TestFoldLookbehindRejected) — the same boundary \p{…} draws.
 	for _, tc := range []struct {
 		pat, in string
 		want    bool
 	}{
-		{`x(?=(?i)abc)`, "xABC", true},          // OpChar fold in lookahead
-		{`x(?=(?i)[a-z])`, "xA", true},          // OpClass fold in lookahead
-		{`(?i)(ab)(?=\1)`, "abAB", true},        // OpBackref fold in lookahead
-		{`(?<=(?i)abc)x`, "ABCx", true},         // OpChar fold in lookbehind
-		{`(?<=(?i)[a-z])x`, "Ax", true},         // OpClass fold in lookbehind
+		{`x(?=(?i)abc)`, "xABC", true},   // OpFoldChar in lookahead
+		{`x(?=(?i)[a-z])`, "xA", true},   // OpClass fold in lookahead
+		{`(?i)(ab)(?=\1)`, "abAB", true}, // OpBackref fold in lookahead
 	} {
 		if got := matchString(t, tc.pat, tc.in); got != tc.want {
 			t.Errorf("/%s/ on %q: got %v want %v", tc.pat, tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestFoldLookbehindRejected confirms that a case-insensitive atom — being
+// rune-aware and thus of variable byte width — is refused inside a fixed-width
+// lookbehind, the same boundary the engine draws for \p{…}.
+func TestFoldLookbehindRejected(t *testing.T) {
+	for _, pat := range []string{`(?<=(?i)abc)x`, `(?<=(?i)[a-z])x`, `(?<=(?i)é)x`} {
+		if _, err := syntax.Parse(pat); err == nil {
+			t.Errorf("Parse(%q): expected a variable-width-lookbehind error", pat)
 		}
 	}
 }

@@ -44,8 +44,15 @@ func TestInlineFoldFlag(t *testing.T) {
 		{pat: `(?i)[m-p]`, in: "Q", nomatch: true},
 		// Non-letters are unaffected by folding.
 		{pat: `(?i)5`, in: "5", want: "5"},
-		// Backreferences fold when /i is in effect at the backref.
+		// Backreferences fold when /i is in effect at the backref. (Backref folding
+		// is ASCII-only, by design — see the rune-folding boundary note.) The cases
+		// below cover folding an upper-case and a lower-case input byte and a
+		// non-letter byte that simply must match exactly.
 		{pat: `(?i)(ab)\1`, in: "AbAB", want: "AbAB"},
+		{pat: `(?i)(ab)\1`, in: "abAB", want: "abAB"},
+		{pat: `(?i)(AB)\1`, in: "ABab", want: "ABab"},
+		{pat: `(?i)(a!)\1`, in: "a!a?", nomatch: true},
+		{pat: `(?i)(a-)\1`, in: "a-a-", want: "a-a-"},
 		{pat: `(ab)(?i)\1`, in: "abAB", want: "abAB"},
 		{pat: `(ab)\1`, in: "abAB", nomatch: true},
 		// Named backreference folds too.

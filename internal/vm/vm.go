@@ -111,6 +111,13 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				m.consumed()
 				continue
 			}
+		case compile.OpFoldChar:
+			if ok, w := m.foldCharStep(in, sp); ok {
+				pc++
+				sp += w
+				m.consumed()
+				continue
+			}
 		case compile.OpAny:
 			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
 				pc++
@@ -283,6 +290,13 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 				clear(visited)
 				continue
 			}
+		case compile.OpFoldChar:
+			if ok, w := m.foldCharStep(in, sp); ok {
+				pc++
+				sp += w
+				clear(visited)
+				continue
+			}
 		case compile.OpAny:
 			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
 				pc++
@@ -424,21 +438,39 @@ func (m *machine) push(pc, sp int, caps []int) {
 }
 
 // charMatch reports whether input byte b is accepted by an OpChar instruction.
-// Under case-insensitive matching (Fold), an ASCII letter also matches the byte
-// of the opposite case.
+// OpChar is byte-exact: case-insensitive (/i) matching of a character with a
+// Unicode case partner is handled by the rune-aware OpFoldChar instead, so
+// OpChar never folds.
 func charMatch(in compile.Inst, b byte) bool {
-	return b == in.B || (in.Fold && swapASCIICase(b) == in.B)
+	return b == in.B
+}
+
+// foldCharStep reports whether the OpFoldChar instruction in matches the code
+// point at position sp and, if so, its byte length. The input code point matches
+// when it is in the same simple-case-folding orbit as in.Rune (so /É/i matches
+// "é" and /k/i matches the Kelvin sign). Like every rune-aware atom it refuses to
+// match at a UTF-8 continuation byte and returns ok=false at end of input.
+func (m *machine) foldCharStep(in compile.Inst, sp int) (ok bool, width int) {
+	if sp >= len(m.input) || isContinuationByte(m.input[sp]) {
+		return false, 0
+	}
+	r, w := utf8.DecodeRuneInString(m.input[sp:])
+	if charset.FoldEqual(in.Rune, r) {
+		return true, w
+	}
+	return false, 0
 }
 
 // classStep reports whether the OpClass instruction in matches at position sp
-// and, if so, how many bytes it consumes. A byte-oriented class (no \p{…}
-// member) consumes one byte; a rune-aware class decodes one UTF-8 code point
-// and consumes its byte length. It returns ok=false at end of input.
+// and, if so, how many bytes it consumes. A byte-oriented class (no \p{…} member
+// and not folded) consumes one byte; a rune-aware class — one carrying a \p{…}
+// member or folded under /i — decodes one UTF-8 code point and consumes its byte
+// length. It returns ok=false at end of input.
 func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 	if sp >= len(m.input) {
 		return false, 0
 	}
-	if len(in.Props) == 0 {
+	if len(in.Props) == 0 && !in.Fold {
 		if classMatch(in, m.input[sp]) {
 			return true, 1
 		}
@@ -478,37 +510,23 @@ func (m *machine) propStep(in compile.Inst, sp int) (ok bool, width int) {
 func isContinuationByte(b byte) bool { return b&0xc0 == 0x80 }
 
 // classMatch reports whether byte b is accepted by a byte-oriented OpClass
-// instruction. Under case-insensitive matching (Fold), membership is tested for
-// both b and its ASCII-case counterpart before the class's Negate flag is
-// applied — so e.g. (?i)[a-z] accepts 'A' and (?i)[^a-z] rejects it.
+// instruction (one that is neither folded nor carrying a \p{…} member). The
+// class's Negate flag is applied after range membership.
 func classMatch(in compile.Inst, b byte) bool {
-	inSet := rangesContain(in.Ranges, b)
-	if in.Fold && !inSet {
-		inSet = rangesContain(in.Ranges, swapASCIICase(b))
-	}
-	return inSet != in.Negate
+	return rangesContain(in.Ranges, b) != in.Negate
 }
 
 // classMatchRune reports whether code point r is accepted by a rune-aware
-// OpClass instruction (one carrying at least one \p{…} member). r is in the
-// positive set if it falls in any byte range (whose bounds, produced only from
-// byte syntax, are all ASCII) or satisfies any property member; the class's own
-// Negate is applied last. Folding still only affects the ASCII byte ranges,
-// matching the engine's ASCII-only case-folding boundary.
+// OpClass instruction — one carrying a \p{…} member or folded under /i. r is in
+// the positive set if it falls in any byte range (whose bounds, from byte syntax,
+// are all ASCII), any code-point range (the multi-byte members of a folded
+// class), or satisfies any property member; the class's own Negate is applied
+// last. When the class is folded, range membership uses simple case folding, so
+// the input code point matches when it, or any rune in its simple-case-folding
+// orbit, lies in the range — making (?i)[a-z] accept the Kelvin sign and
+// (?i)[α-ω] accept an uppercase Greek letter.
 func classMatchRune(in compile.Inst, r rune) bool {
-	inSet := false
-	for _, rg := range in.Ranges {
-		if r >= rune(rg.Lo) && r <= rune(rg.Hi) {
-			inSet = true
-			break
-		}
-		if in.Fold && r >= 0 && r <= 0x7f {
-			if b := swapASCIICase(byte(r)); b >= rg.Lo && b <= rg.Hi {
-				inSet = true
-				break
-			}
-		}
-	}
+	inSet := rangeRuneMatch(in, r)
 	if !inSet {
 		for _, pr := range in.Props {
 			if charset.Match(pr.Name, pr.Negate, r) {
@@ -518,6 +536,30 @@ func classMatchRune(in compile.Inst, r rune) bool {
 		}
 	}
 	return inSet != in.Negate
+}
+
+// rangeRuneMatch reports whether code point r falls in any of an OpClass
+// instruction's byte ranges or code-point ranges, applying simple case folding
+// when the class is folded (/i).
+func rangeRuneMatch(in compile.Inst, r rune) bool {
+	for _, rg := range in.Ranges {
+		lo, hi := rune(rg.Lo), rune(rg.Hi)
+		if in.Fold {
+			if charset.FoldRangeContains(r, lo, hi) {
+				return true
+			}
+		} else if r >= lo && r <= hi {
+			return true
+		}
+	}
+	// RuneRanges are produced only for a folded class (parseFoldRuneMember runs
+	// only under /i), so membership is always tested with simple case folding.
+	for _, rg := range in.RuneRanges {
+		if charset.FoldRangeContains(r, rg.Lo, rg.Hi) {
+			return true
+		}
+	}
+	return false
 }
 
 // bytesEqual reports whether the equal-length strings a and b are equal. When
@@ -547,9 +589,9 @@ func rangesContain(ranges []ast.ClassRange, b byte) bool {
 }
 
 // swapASCIICase returns b with its ASCII letter case flipped (A-Z <-> a-z); any
-// other byte is returned unchanged. Folding is intentionally ASCII-only: the
-// engine is byte-oriented and Unicode case-folding belongs to the later
-// rune-level work.
+// other byte is returned unchanged. It backs the deliberately ASCII-only folding
+// of a backreference under /i (literals and classes fold rune-aware via
+// unicode.SimpleFold instead).
 func swapASCIICase(b byte) byte {
 	switch {
 	case b >= 'A' && b <= 'Z':

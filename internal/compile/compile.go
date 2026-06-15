@@ -13,6 +13,11 @@ type Op int
 const (
 	// OpChar matches the single byte B and advances.
 	OpChar Op = iota
+	// OpFoldChar matches one UTF-8 code point case-insensitively (/i): it decodes
+	// the code point at the cursor and accepts it when it is in the same simple
+	// -case-folding orbit as Rune, advancing by that code point's byte length. It
+	// is rune-aware, like OpUniProp.
+	OpFoldChar
 	// OpAny matches any byte and advances; unless DotAll is set it excludes
 	// '\n' (Ruby's /m option makes the dot match a newline too).
 	OpAny
@@ -58,19 +63,21 @@ const (
 
 // Inst is a single VM instruction. Only the fields relevant to its Op are used.
 type Inst struct {
-	Op     Op
-	B      byte             // OpChar
-	X, Y   int              // OpSplit, OpJmp
-	Slot   int              // OpSave
-	Ranges []ast.ClassRange // OpClass
-	Props  []ast.PropRef    // OpClass (rune-aware members)
-	Prop   ast.PropRef      // OpUniProp
-	Negate bool             // OpClass, OpLook
-	Behind bool             // OpLook
-	Fold   bool             // OpChar, OpClass (case-insensitive, /i)
-	DotAll bool             // OpAny (Ruby /m: the dot also matches '\n')
-	Min    int              // OpLook (lookbehind width lower bound)
-	Max    int              // OpLook (lookbehind width upper bound)
+	Op         Op
+	B          byte                 // OpChar
+	Rune       rune                 // OpFoldChar
+	X, Y       int                  // OpSplit, OpJmp
+	Slot       int                  // OpSave
+	Ranges     []ast.ClassRange     // OpClass
+	RuneRanges []ast.RuneClassRange // OpClass (rune-aware code-point ranges, /i)
+	Props      []ast.PropRef        // OpClass (rune-aware members)
+	Prop       ast.PropRef          // OpUniProp
+	Negate     bool                 // OpClass, OpLook
+	Behind     bool                 // OpLook
+	Fold       bool                 // OpClass (case-insensitive, /i: rune-aware folding)
+	DotAll     bool                 // OpAny (Ruby /m: the dot also matches '\n')
+	Min        int                  // OpLook (lookbehind width lower bound)
+	Max        int                  // OpLook (lookbehind width upper bound)
 }
 
 // Program is a compiled regular expression: the instruction list, the number of
@@ -130,11 +137,13 @@ func (b *builder) node(n ast.Node) {
 	case *ast.Empty:
 		// Nothing to emit.
 	case *ast.Literal:
-		b.emit(Inst{Op: OpChar, B: t.B, Fold: t.Fold})
+		b.emit(Inst{Op: OpChar, B: t.B})
+	case *ast.FoldLiteral:
+		b.emit(Inst{Op: OpFoldChar, Rune: t.R})
 	case *ast.AnyChar:
 		b.emit(Inst{Op: OpAny, DotAll: t.DotAll})
 	case *ast.Class:
-		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, Props: t.Props, Negate: t.Negate, Fold: t.Fold})
+		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, RuneRanges: t.RuneRanges, Props: t.Props, Negate: t.Negate, Fold: t.Fold})
 	case *ast.UnicodeProp:
 		b.emit(Inst{Op: OpUniProp, Prop: ast.PropRef{Name: t.Name, Negate: t.Negate}})
 	case *ast.Anchor:

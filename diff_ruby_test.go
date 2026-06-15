@@ -225,6 +225,27 @@ var diffUnicodeCorpus = []rubyCase{
 	{`[\p{L}\d]+`, "héllo3!"},
 	{`[^\p{L}]+`, "héllo123x"},
 	{`(\p{Lu})(\p{Ll}+)`, "Héllo"},
+
+	// Rune-level case folding under (?i): multi-byte letters fold via simple
+	// (1:1) case folding, so a literal or class matches its Unicode case partner.
+	{`(?i)É`, "éxy"},
+	{`(?i)é`, "ÉXY"},
+	{`(?i)café`, "CAFÉ here"},
+	{`(?i)naïve`, "a NAÏVE one"},
+	{`(?i)Σ`, "σ end"},     // Greek sigma (Σ ↔ σ)
+	{`(?i)σ`, "ς end"},     // and the final-sigma orbit member ς
+	{`(?i)Б`, "б end"},     // Cyrillic
+	{`(?i)Ωμέγα`, "ωμέγα"}, // a whole folded Greek word
+	{`(?i)k`, "K end"},     // ASCII letter folding still works rune-aware
+	{`(?i)[é]`, "xÉy"},
+	{`(?i)[α-ω]+`, "ΑΒΓδε"}, // Greek range folds to uppercase members
+	{`(?i)[Α-Ω]+`, "αβγΔΕ"},
+	{`(?i)[Б-Я]+`, "бвгдx"},
+	{`(?i)[a-zé]+`, "ABÉcd!"}, // mixed ASCII range plus a folded multi-byte member
+	{`(?i)[^é]+`, "ÉÉxyz"},    // negated folded class skips the case partner
+	{`(?i)[é-ñ]`, "xÑy"},      // a multi-byte code-point range
+	{`(?i)Δ+`, "δδΔx"},
+	{`(?i)(é)`, "É"}, // captured folded literal
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

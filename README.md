@@ -26,10 +26,12 @@ It is the regexp backend for
 > Phase 3 **POSIX bracket classes `[[:alpha:]]` … `[[:^digit:]]`**
 > (the 14 standard classes, positive and negated) inside character classes, and
 > the **inline options `(?imx)` / `(?imx:…)`** (with `(?-…)` to turn them off) —
-> `i` ASCII case-insensitive matching (folding ASCII letters in literals, classes
-> and backreferences), `m` dot-all (the dot also matches a newline), and `x`
-> extended/free-spacing (unescaped whitespace and `#` comments ignored, except in
-> a class) — and **Unicode property classes `\p{…}` / `\P{…}`** (general
+> `i` case-insensitive matching (**rune-level** folding of literals and classes
+> via `unicode.SimpleFold`, so `/É/i` matches `é`, `(?i)[α-ω]` an uppercase Greek
+> letter, and `/k/i` even the Kelvin sign; backreferences fold ASCII-only), `m`
+> dot-all (the dot also matches a newline), and `x` extended/free-spacing
+> (unescaped whitespace and `#` comments ignored, except in a class) — and
+> **Unicode property classes `\p{…}` / `\P{…}`** (general
 > categories `L N P S Z C` + `Lu Ll Lt Lm Lo Nd`, plus the Onigmo aliases
 > `Alpha Alnum Digit Space Upper Lower Word`, with `\p{^…}` negation and
 > embedding inside character classes) — all differential-tested against MRI,
@@ -40,12 +42,15 @@ It is the regexp backend for
 > `(a+)+$` run in polynomial rather than exponential time (with the step budget
 > as the backstop), producing the identical leftmost-first match.
 >
-> **Rune/byte boundary.** `\p{…}` is the only **rune-aware** atom: it decodes one
-> UTF-8 code point and advances by its byte length (a `\p{…}` member also makes
-> its enclosing character class rune-aware). Everything else is **byte-oriented**
-> and byte-exact, and match offsets are **byte** offsets (MRI reports character
+> **Rune/byte boundary.** `\p{…}` and a folded (`/i`) literal or class are the
+> **rune-aware** atoms: each decodes one UTF-8 code point and advances by its byte
+> length (a `\p{…}` member, or `/i`, also makes the enclosing character class
+> rune-aware). Folding is **simple (1:1)** only — full/special folding (`ß`→`ss`,
+> Turkish dotless-i) is out of scope. Everything else is **byte-oriented** and
+> byte-exact, and match offsets are **byte** offsets (MRI reports character
 > offsets, so the engines agree on matched text but not on the numeric span on
-> multi-byte input). Subexpression calls `\g<…>` and Unicode case-folding are
+> multi-byte input); a rune-aware atom never matches at a UTF-8 continuation byte
+> and is rejected inside a fixed-width lookbehind. Subexpression calls `\g<…>` are
 > next. See **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture
 > and roadmap.
 

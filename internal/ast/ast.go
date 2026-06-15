@@ -11,12 +11,27 @@ type Node interface {
 	isNode()
 }
 
-// Literal matches a single byte exactly. When Fold is set (case-insensitive
-// mode, /i) and B is an ASCII letter, the byte of the opposite case matches as
-// well.
+// Literal matches a single byte exactly. It is the byte-oriented literal used
+// for every character outside case-insensitive mode, and for an under-/i
+// character that has no Unicode case partner (an ASCII non-letter, or a code
+// point Unicode does not case-fold) — folding such a character is a no-op, so no
+// rune awareness is needed. An under-/i character that does have a case partner
+// is emitted as a rune-aware FoldLiteral instead, so e.g. a Kelvin sign matches
+// "k".
 type Literal struct {
-	B    byte
-	Fold bool
+	B byte
+}
+
+// FoldLiteral matches a single Unicode code point case-insensitively (/i). It is
+// rune-aware, like UnicodeProp: the VM decodes one UTF-8 code point at the cursor
+// and accepts it when it is in the same simple-case-folding orbit as R (Go's
+// unicode.SimpleFold), advancing by that code point's byte length. So /É/i
+// matches "é", and /k/i matches the Kelvin sign U+212A, exactly as Onigmo/Ruby's
+// simple (1:1) folding does. Full/special case folding (ß→"ss", locale rules) is
+// deliberately out of scope, matching the engine's documented simple-folding
+// boundary.
+type FoldLiteral struct {
+	R rune
 }
 
 // AnyChar matches any byte (the dot metacharacter). By default a newline is
@@ -32,6 +47,14 @@ type ClassRange struct {
 	Lo, Hi byte
 }
 
+// RuneClassRange is a single inclusive code-point range inside a character
+// class. It is produced only when the class is rune-aware (case-insensitive /i),
+// where a member may be a multi-byte code point (e.g. (?i)[é] or (?i)[α-ω]) whose
+// bounds do not fit in a byte. A single code point c is the range c..c.
+type RuneClassRange struct {
+	Lo, Hi rune
+}
+
 // PropRef is a reference to a Unicode property inside a character class (a
 // \p{name} or \P{name} member). Negate is the member-local negation from the
 // \P / \p{^…} form; it is independent of the enclosing class's own Negate.
@@ -42,20 +65,24 @@ type PropRef struct {
 
 // Class is a character class: a set of byte ranges plus zero or more Unicode
 // property references, optionally negated as a whole. When Fold is set
-// (case-insensitive mode, /i), membership is tested against both an input byte
-// and its ASCII-case counterpart before Negate is applied.
+// (case-insensitive mode, /i), the class becomes rune-aware and membership is
+// tested by simple case folding: a decoded input code point matches when it, or
+// any code point in its simple-case-folding orbit (unicode.SimpleFold), falls in
+// a range or satisfies a property. So (?i)[a-z] matches "A" and the Kelvin sign,
+// and (?i)[α-ω] matches an uppercase Greek letter. Negate is applied last.
 //
 // A class is byte-oriented (its ranges test a single input byte) unless it
-// contains a property reference, in which case the whole class becomes
-// rune-aware: the VM decodes one UTF-8 code point and tests it against both the
-// ranges (whose bounds, produced only from byte syntax, are all ASCII) and the
-// properties. This is the same rune/byte boundary the standalone UnicodeProp
-// node draws.
+// contains a property reference or Fold is set, in which case the whole class
+// becomes rune-aware: the VM decodes one UTF-8 code point and tests it against
+// both the ranges (whose bounds, produced only from byte syntax, are all ASCII)
+// and the properties. This is the same rune/byte boundary the standalone
+// UnicodeProp node draws.
 type Class struct {
-	Ranges []ClassRange
-	Props  []PropRef
-	Negate bool
-	Fold   bool
+	Ranges     []ClassRange
+	RuneRanges []RuneClassRange
+	Props      []PropRef
+	Negate     bool
+	Fold       bool
 }
 
 // UnicodeProp matches a single Unicode code point that belongs to (or, when
@@ -148,6 +175,7 @@ type Look struct {
 type Empty struct{}
 
 func (*Literal) isNode()     {}
+func (*FoldLiteral) isNode() {}
 func (*AnyChar) isNode()     {}
 func (*Class) isNode()       {}
 func (*UnicodeProp) isNode() {}

@@ -15,8 +15,9 @@
 // also adds the inline options (?flags) (a set directive scoped to the rest of
 // the enclosing group), (?flags:...) (a scoped group), and the (?-flags) /
 // (?f-f:...) turn-off forms, exactly as in Onigmo/Ruby. Three option letters are
-// recognised: i (ASCII case-insensitive matching — the fold flag is recorded on
-// literals, character classes, and backreferences), m (dot-all: the dot also
+// recognised: i (case-insensitive matching — a folded letter literal is lowered
+// to a rune-aware FoldLiteral via unicode.SimpleFold, character classes fold
+// rune-aware, and backreferences fold ASCII-only), m (dot-all: the dot also
 // matches a newline), and x (extended/free-spacing: unescaped whitespace and #
 // comments in the pattern are ignored, except inside a character class). Any
 // other flag letter is reported as a syntax error. Phase 3 also adds the
@@ -33,6 +34,8 @@ package syntax
 import (
 	"errors"
 	"fmt"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-onigmo/regexp/internal/ast"
 	"github.com/go-onigmo/regexp/internal/charset"
@@ -314,9 +317,40 @@ func (p *parser) parseAtom() (ast.Node, error) {
 	case '*', '+', '?':
 		return nil, p.errorf("nothing to repeat: %q", b)
 	default:
-		p.next()
-		return &ast.Literal{B: b, Fold: p.flags.fold}, nil
+		return p.parseLiteralRune(), nil
 	}
+}
+
+// parseLiteralRune consumes the next literal character and builds its atom. When
+// case-insensitive mode (/i) is in effect it decodes a whole UTF-8 code point and,
+// if that code point has a non-trivial simple-case-folding orbit (every ASCII
+// letter, and many non-ASCII letters), emits a rune-aware FoldLiteral so that a
+// Unicode case partner matches too — e.g. /É/i matches "é" and /k/i matches the
+// Kelvin sign. A code point with no fold partner (an ASCII non-letter, or a
+// letter Unicode does not case-fold) needs no rune awareness, so its leading byte
+// is emitted as a plain byte Literal exactly as before; the remaining
+// continuation bytes (if any) are consumed as their own byte literals on later
+// iterations, which is byte-identical to the input. Outside /i, every character is
+// a byte Literal, keeping the engine byte-oriented.
+func (p *parser) parseLiteralRune() ast.Node {
+	if !p.flags.fold {
+		return &ast.Literal{B: p.next()}
+	}
+	r, size := utf8.DecodeRuneInString(p.src[p.pos:])
+	if r == utf8.RuneError && size <= 1 {
+		// An invalid UTF-8 lead byte (or a lone byte) cannot be a foldable code
+		// point; treat it as a single opaque byte, matching the byte-oriented core.
+		return &ast.Literal{B: p.next()}
+	}
+	if unicode.SimpleFold(r) == r {
+		// No case partner (an ASCII non-letter, or a letter Unicode does not fold):
+		// rune-awareness would add nothing, so emit the leading byte as a plain
+		// literal and let any continuation bytes follow on later iterations — which
+		// is byte-identical to matching the whole code point.
+		return &ast.Literal{B: p.next()}
+	}
+	p.pos += size
+	return &ast.FoldLiteral{R: r}
 }
 
 // parseGroup parses a capturing group (...), a non-capturing group (?:...), or
@@ -559,10 +593,16 @@ func fixedWidth(n ast.Node) bool {
 		// A property matches one code point, whose UTF-8 byte width varies, so a
 		// lookbehind whose width must be a compile-time constant cannot contain it.
 		return false
+	case *ast.FoldLiteral:
+		// A folded code point can match case partners of different UTF-8 width
+		// (e.g. /k/i matches a 1-byte "K" or the 3-byte Kelvin sign), so its byte
+		// width is not a compile-time constant.
+		return false
 	case *ast.Class:
-		// A rune-aware class (one carrying a \p{…} member) likewise matches a
-		// code point of variable byte width; a byte-oriented class is one byte.
-		return len(t.Props) == 0
+		// A rune-aware class — one carrying a \p{…} member or folded under /i —
+		// matches a code point of variable byte width; a byte-oriented class is one
+		// byte.
+		return len(t.Props) == 0 && !t.Fold
 	}
 	// Literal, AnyChar, byte Class, Anchor, Look, Empty, and containers whose
 	// parts all checked out are constant-width.
@@ -795,6 +835,18 @@ func (p *parser) parseClass() (ast.Node, error) {
 			cls.Ranges = append(cls.Ranges, ranges...)
 			continue
 		}
+		// Under case-insensitive mode the class is rune-aware, so a member that is
+		// a multi-byte UTF-8 code point (e.g. (?i)[é] or a bound of (?i)[α-ω]) is
+		// decoded as a whole rune into a RuneRange rather than its raw bytes. A '\'
+		// escape is left to parseClassItem below, which yields only ASCII
+		// bytes/ranges/properties. Outside /i this branch is skipped and the class
+		// stays byte-oriented, matching the engine's rune/byte boundary.
+		if cls.Fold && p.peek() >= 0x80 {
+			if err := p.parseFoldRuneMember(cls); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		lo, sub, prop, err := p.parseClassItem()
 		if err != nil {
 			return nil, err
@@ -812,6 +864,21 @@ func (p *parser) parseClass() (ast.Node, error) {
 		// Possible range lo-hi.
 		if !p.eof() && p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
 			p.next() // consume '-'
+			// Under /i the high bound may be a multi-byte code point even when the
+			// low bound was ASCII (e.g. (?i)[a-é]); parseClassRangeBound decodes it
+			// whole and the range becomes a rune range when either bound exceeds the
+			// byte space. Outside /i the high bound is a single byte as before.
+			if cls.Fold {
+				hi, err := p.parseClassRangeBound()
+				if err != nil {
+					return nil, err
+				}
+				if hi < rune(lo) {
+					return nil, p.errorf("invalid range %q-%q in character class", lo, hi)
+				}
+				cls.RuneRanges = append(cls.RuneRanges, ast.RuneClassRange{Lo: rune(lo), Hi: hi})
+				continue
+			}
 			hi, subHi, propHi, err := p.parseClassItem()
 			if err != nil {
 				return nil, err
@@ -827,6 +894,52 @@ func (p *parser) parseClass() (ast.Node, error) {
 		}
 		cls.Ranges = append(cls.Ranges, ast.ClassRange{Lo: lo, Hi: lo})
 	}
+}
+
+// parseFoldRuneMember parses one multi-byte code-point member (or the low bound
+// of a code-point range) inside a case-insensitive class, whose lead byte is at
+// the cursor. It decodes the whole code point, and if a '-' (not the closing
+// "-]") follows, the high bound — which may itself be a multi-byte rune or an
+// ASCII byte — completing a RuneRange. A single member becomes the degenerate
+// range lo..lo. The decoded high bound must not be below the low bound.
+func (p *parser) parseFoldRuneMember(cls *ast.Class) error {
+	lo, size := utf8.DecodeRuneInString(p.src[p.pos:])
+	p.pos += size
+	if !p.eof() && p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
+		p.next() // consume '-'
+		hi, err := p.parseClassRangeBound()
+		if err != nil {
+			return err
+		}
+		if hi < lo {
+			return p.errorf("invalid range %q-%q in character class", lo, hi)
+		}
+		cls.RuneRanges = append(cls.RuneRanges, ast.RuneClassRange{Lo: lo, Hi: hi})
+		return nil
+	}
+	cls.RuneRanges = append(cls.RuneRanges, ast.RuneClassRange{Lo: lo, Hi: lo})
+	return nil
+}
+
+// parseClassRangeBound reads the high bound of a code-point range in a
+// case-insensitive class. The bound is a single code point: a multi-byte rune is
+// decoded whole; otherwise a single byte (which may be a '\'-escaped ASCII
+// character such as \n) is taken. A class escape (\d) or property (\p{…}) is not
+// a valid range bound, mirroring the byte-oriented parser's rejection.
+func (p *parser) parseClassRangeBound() (rune, error) {
+	if p.peek() >= 0x80 {
+		r, size := utf8.DecodeRuneInString(p.src[p.pos:])
+		p.pos += size
+		return r, nil
+	}
+	hi, sub, prop, err := p.parseClassItem()
+	if err != nil {
+		return 0, err
+	}
+	if sub != nil || prop != nil {
+		return 0, p.errorf("invalid range end in character class")
+	}
+	return rune(hi), nil
 }
 
 // parseClassItem parses one member of a character class: a single byte
