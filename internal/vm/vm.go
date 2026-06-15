@@ -183,6 +183,16 @@ func MatchTimeout(prog *compile.Program, input string, budget int, deadline time
 		}
 		lastViableStart = strings.LastIndex(input, pf.required)
 	}
+	// caps is the base capture buffer reused across start positions. run() never
+	// writes it in place — OpSave and OpSplit copy-on-write, so a failed attempt
+	// leaves this buffer untouched at its all-(-1) reset state and the next start
+	// can reuse it without reallocating. On success run() returns a copied slice
+	// (the live, mutated caps), never this buffer, so handing the result back is
+	// safe. The reset only re-clears slots an earlier successful-then-abandoned
+	// attempt could have… no attempt mutates the base buffer, so a single
+	// initialization suffices; we re-fill defensively per start anyway since it is
+	// O(NumSlots) and dwarfed by the match work.
+	caps := make([]int, prog.NumSlots())
 	for start := 0; start <= len(input); start++ {
 		if lastViableStart >= 0 && start > lastViableStart {
 			// Past the last position from which a match could still contain the
@@ -200,7 +210,6 @@ func MatchTimeout(prog *compile.Program, input string, budget int, deadline time
 			// advanced cursor stays a valid start offset.
 			start = next
 		}
-		caps := make([]int, prog.NumSlots())
 		for i := range caps {
 			caps[i] = -1
 		}

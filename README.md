@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-onigmo.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
-[![Phase](https://img.shields.io/badge/phase-0--3%20done%2C%204%20started-1a7f37)](docs/plan-regexp.md)
+[![Phase](https://img.shields.io/badge/phase-0--4%20complete-1a7f37)](docs/plan-regexp.md)
 
 **A pure-Go (no cgo) reimplementation of [Onigmo](https://github.com/k-takata/Onigmo)**,
 the regular-expression engine used by Ruby — a faithful **backtracking VM** with
@@ -17,7 +17,7 @@ It is the regexp backend for
 [go-embedded-ruby](https://github.com/go-embedded-ruby/ruby), but is a
 **standalone, reusable** module with no dependency on the Ruby runtime.
 
-> **Status: Phases 0–3 implemented, Phase 4 started** — a greedy backtracking VM with
+> **Status: Phases 0–4 complete** — a greedy backtracking VM with
 > leftmost-first semantics covering literals/escapes, `.`, character classes,
 > anchors (`\A \z \Z ^ $`), greedy, **non-greedy/lazy**, and **possessive**
 > quantifiers (`* + ? {m,n}`, `*? +? ?? {m,n}?`, and `*+ ++ ?+`) plus
@@ -74,6 +74,21 @@ It is the regexp backend for
 > receiver is left unchanged, so a shared `*Regexp` stays concurrency-safe; the VM
 > polls the clock only once every 4096 steps, so a search with no deadline pays
 > nothing.
+>
+> **Benchmarks & transparent allocation reuse (Phase 4)** are in: a representative
+> suite (`bench_test.go`) covers literal-prefix and alternation scanning, anchored
+> matching, backtracking-heavy nested quantifiers under the ReDoS memo,
+> subexpression-call recursion, multibyte/UTF-8 and binary scanning, and the
+> prefilter fast paths against a forced-slow baseline. The start-position scan now
+> reuses one capture buffer across offsets instead of reallocating at each (the VM
+> never writes the base buffer in place, so this is behaviour-preserving), cutting
+> the forced-slow whole-haystack baseline from ~270 k to ~180 k allocations. The
+> prefilter fast paths run at ~15.6 µs versus ~3.37 ms for that baseline (**~210×**)
+> on a 90 KB non-matching haystack, and an active `WithTimeout` adds ~2 % (polling
+> noise). **The engine roadmap (Phases 0–4) is complete** — see the
+> *Engine status: complete* section of
+> [docs/plan-regexp.md](docs/plan-regexp.md) for the full supported-feature list
+> and the documented out-of-scope boundaries.
 >
 > **Rune/byte boundary.** `\p{…}` and a folded (`/i`) literal or class are the
 > **rune-aware** atoms: each decodes one UTF-8 code point and advances by its byte

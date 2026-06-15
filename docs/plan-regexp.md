@@ -349,10 +349,10 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   With the UTF-8 char-advancing cursor, binary mode, and literal multi-byte
   class members in place, the **multi-encoding work is complete** for the
   engine's supported encodings.
-- **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
+- **Phase 4** ✅ *done* — ReDoS hardening (✅ memoization + step budget +
   wall-clock timeout), optimizer (✅ start-position prefilter: anchors, literal
   prefixes, first-byte sets, alternation-aware; ✅ required-interior-literal
-  prefilter), benchmarks.
+  prefilter; ✅ hot-path scan-allocation reuse), ✅ benchmarks.
 
   **Memoization** ✅ *done* — the backtracking VM memoizes the
   (instruction, input-position) split states it reaches and never re-explores
@@ -431,15 +431,112 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   one AND), so a search with no deadline pays nothing and a deadline-bounded one
   amortizes the clock read to noise; the same poll runs inside the lookaround
   sub-VM. A pathological pattern is then bounded by whichever of the budget or the
-  deadline it reaches first. Still to come in Phase 4: further optimizer passes
-  and broader benchmarks. Phase 3's multi-encoding support has had its first slice
-  landed (UTF-8 char-advancing `.`/byte-class + an ASCII-8BIT/binary mode, with
-  the `Regexp` carrying its encoding); the remaining encoding increments — literal
-  multi-byte class members and cursors for UTF-16/32, EUC and Shift_JIS — are
-  scoped above under Phase 3, each touching the input-advancing atoms and the
-  offset model.
-- **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
-  adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
+  deadline it reaches first.
+
+  **Hot-path scan-allocation reuse** ✅ *done (transparent)* — the start-position
+  scan previously allocated a fresh capture buffer (`make([]int, NumSlots)`) at
+  *every* offset it tried. Because the VM never writes that base buffer in place —
+  `OpSave` and the backtrack `OpSplit` snapshot copy-on-write, so a failed attempt
+  leaves it untouched at its all-`-1` reset state — a single buffer is now
+  allocated once per search and re-cleared (O(NumSlots), dwarfed by the match work)
+  for each start, instead of re-allocated. On a successful match the VM returns the
+  *copied*, live slice it mutated, never the base buffer, so the result is
+  unaffected. The change is purely an allocation reduction with no behavioural
+  effect (the unchanged differential corpus and brute-force-vs-prefilter
+  equivalence test are the proof): the forced-slow whole-haystack baseline
+  (`.\d` over a 90 KB miss) drops from ~270 k allocs / 3.96 ms to ~180 k allocs /
+  3.37 ms, and the alternation-scan miss from ~42 k to ~36 k allocs.
+
+  **Benchmark suite** ✅ *done* — `bench_test.go` (in the external `onigmo_test`
+  package, so additive and outside the coverage gate but asserting every result so
+  a regression fails loudly) exercises the engine through its public API over the
+  representative workloads: literal-prefix scanning (hit/miss), alternation
+  (hit/miss), anchored (`\A…`) match/miss, backtracking-heavy nested-quantifier
+  patterns under the ReDoS memo (`\A(a*)*b`, `\A(a|aa)+b` on a 40-`a` non-matching
+  input — both terminate in ~10–12 µs rather than exponentially), a backreference
+  pattern (memo off, step-budget backstop), subexpression-call recursion (the
+  recursive balanced-parens `\g<bal>` grammar), multibyte/UTF-8 scanning (the
+  char-advancing dot, a `\p{Word}+` rune-aware scan, and the contrasting ASCII-8BIT
+  one-byte cursor), the prefilter fast paths versus a forced-slow baseline on the
+  same haystack, one-shot `Compile`, and the wall-clock-timeout polling overhead.
+  Headline numbers (Apple M4 Max, Go stable, 90 KB non-matching haystack): the
+  literal-prefix and required-interior-literal misses run at ~15.6–15.9 µs versus
+  the forced-slow `.\d` baseline at ~3.37 ms — **~210×** — and an active
+  `WithTimeout` deadline adds ~2 % (3.46 ms vs 3.37 ms), i.e. polling noise.
+
+  With memoization, the step budget, the wall-clock timeout, the start-position and
+  required-interior-literal prefilters, the transparent scan-allocation reuse, and
+  the benchmark suite all landed, **Phase 4 is complete**. (Phase 3's
+  multi-encoding work — the UTF-8 char-advancing `.`/byte-class, the ASCII-8BIT
+  binary cursor, and literal multi-byte class members — is likewise complete; the
+  per-encoding cursors for UTF-16/32, EUC and Shift_JIS are a documented
+  out-of-scope boundary recorded under Phase 3, not a missing piece.)
+- **Phase 5** *(downstream, not part of this engine module)* — full Ruby
+  `Regexp`/`MatchData` surface via the go-embedded-ruby adapter; replacement DSL
+  (`\1`, `\k<>`, `\&`, blocks). This is the Ruby-runtime integration layer that
+  *consumes* this standalone engine, so it lives in the go-embedded-ruby adapter
+  rather than in `go-onigmo/regexp` itself; the engine module's own roadmap
+  (Phases 0–4) is complete.
+
+## 8. Engine status: complete
+
+The standalone engine roadmap (Phases 0–4) is **complete**. What the engine
+supports, and the deliberately documented boundaries, in one place:
+
+**Supported.**
+
+- **Literals, the dot, character classes** — byte-exact, with POSIX bracket
+  classes `[[:alpha:]]` (and negated `[[:^…:]]`), the shorthand escapes
+  `\d \w \s \h \H` and their complements, and `\R` (linebreak, CR-LF atomic).
+- **Quantifiers** in every mode — greedy `* + ? {m,n}`, lazy `*? +? ?? {m,n}?`,
+  possessive `*+ ++ ?+`, and atomic groups `(?>…)` — with the empty-loop guard.
+- **Groups & references** — capturing, non-capturing `(?:…)`, named `(?<n>…)`,
+  backreferences `\1`/`\k<n>`, and subexpression calls `\g<n>`/`\g<name>`/
+  `\g<±n>`/`\g<0>` (recursive and mutually recursive, e.g. balanced parens).
+- **Anchors** — `^ $ \A \z \Z \G` and word boundaries via the supported classes.
+- **Lookaround** — lookahead `(?=…)`/`(?!…)` and fixed/bounded-width lookbehind
+  `(?<=…)`/`(?<!…)`, with positive-lookahead capture propagation.
+- **Inline flags** — `i` (rune-level simple case folding for literals and
+  classes; ASCII for backrefs), `m` (dot-all), `x` (free-spacing), with Onigmo's
+  scoping and alternation-prefix propagation; scoped `(?flags:…)` and `(?-flags)`.
+- **Unicode** — `\p{…}`/`\P{…}` over the supported categories/aliases (`L N P S Z
+  C`, the `Lu Ll Lt Lm Lo Nd` subcategories, and the POSIX-style `Alpha Alnum
+  Digit Space Upper Lower Word`), rune-aware classes, and multi-byte class members
+  and ranges in UTF-8.
+- **Encodings** — UTF-8 (default; `.`/byte-class advance a whole code point) and
+  ASCII-8BIT (binary `/n`; every atom one byte). Match offsets are byte offsets.
+- **ReDoS safety** — `(pc, sp)` memoization (backref/call-free programs), a
+  deterministic step budget, a recursion-depth cap, and a wall-clock
+  `WithTimeout` — every search terminates deterministically.
+- **Optimizer** — anchor / literal-prefix / first-byte-set / alternation-aware
+  start prefilter, a required-interior-literal whole-haystack gate with a
+  right-bound, and reused per-scan allocation — all transparent (results identical
+  to the unfiltered scan, proven by a brute-force equivalence test).
+
+**Documented out-of-scope boundaries** (deliberate divergences from MRI/Onigmo,
+each recorded inline above):
+
+- **Full/special case folding** — only *simple (1:1)* folding is done; multi-char
+  expansions (`ß`→`ss`) and locale rules (Turkish dotless-ı/İ) are out of scope,
+  and backreference folding is ASCII-only.
+- **`\p{…}` is a deliberate slice** of the categories/aliases above; script and
+  block names (`\p{Han}`, `\p{Hiragana}`, …) and the one-letter `\pL` form are not
+  accepted.
+- **Encodings beyond UTF-8 / ASCII-8BIT** — UTF-16/32, EUC-JP, Shift_JIS, … are
+  out of scope; a caller transcodes legacy/wide text to UTF-8 at the boundary (the
+  `golang.org/x/text/encoding` idiom) and maps the engine's byte offsets back. The
+  `Encoding` enum + `Program.Enc`-keyed cursor switch is the single extension point
+  should a concrete need arise.
+- **Match offsets are byte offsets**, whereas MRI reports character offsets; the
+  two agree on matched *text* but not on the numeric span on multi-byte input
+  (the differential tests compare substrings for the UTF-8 corpus).
+- **Invalid UTF-8** decodes leniently (replacement rune, width 1) rather than
+  raising as MRI does.
+- **Variable-width lookbehind** is rejected (a constant or bounded per-alternative
+  width is required), matching Onigmo; a width-varying body or a `\g<…>`/backref
+  inside one is a syntax error.
+- **Ruby `Regexp`/`MatchData` surface and the replacement DSL** (Phase 5) live in
+  the downstream go-embedded-ruby adapter, not in this engine module.
 
 ## 7. Decisions
 

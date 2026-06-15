@@ -132,5 +132,21 @@
 // strings.Contains, and bounds the scan on the right at the literal's last
 // occurrence (no match can begin past it). Every candidate either pass yields is
 // still verified by the VM, so results are byte-identical to an unfiltered scan.
+// The start-position scan also reuses a single capture buffer across the offsets
+// it tries rather than reallocating at each — the VM never writes that base buffer
+// in place, so the reuse is behaviour-preserving — and a representative benchmark
+// suite (bench_test.go) measures the literal/alternation/anchored/backtracking/
+// subexpression-call/multibyte workloads and the prefilter fast paths against a
+// forced-slow baseline.
+//
+// With these, the standalone engine roadmap (Phases 0–4) is complete. The full
+// supported-feature list and the deliberately documented out-of-scope boundaries
+// (full/special case folding, the \p{…} category slice, encodings beyond
+// UTF-8/ASCII-8BIT, byte rather than character offsets, lenient invalid-UTF-8
+// decoding, and variable-width lookbehind) are collected in the "Engine status:
+// complete" section of docs/plan-regexp.md. The Ruby Regexp/MatchData surface and
+// the replacement DSL (Phase 5) live in the downstream go-embedded-ruby adapter
+// that consumes this module, not here.
+//
 // See docs/plan-regexp.md for the full roadmap.
 package onigmo
