@@ -82,6 +82,7 @@ type Inst struct {
 	B          byte                 // OpChar
 	Rune       rune                 // OpFoldChar
 	X, Y       int                  // OpSplit, OpJmp
+	GuardTo    int                  // OpSplit: where the empty-loop guard jumps on revisit
 	Slot       int                  // OpSave
 	Ranges     []ast.ClassRange     // OpClass
 	RuneRanges []ast.RuneClassRange // OpClass (rune-aware code-point ranges, /i)
@@ -280,6 +281,10 @@ func (b *builder) alternate(a *ast.Alternate) {
 			b.insts[split].X = start
 			jmps = append(jmps, b.emit(Inst{Op: OpJmp}))
 			b.insts[split].Y = len(b.insts)
+			// An alternation split is not a loop; revisiting it at the same position
+			// means its X branch was already explored, so the empty-loop guard takes
+			// the Y branch (the next alternative).
+			b.insts[split].GuardTo = b.insts[split].Y
 		}
 	}
 	end := len(b.insts)
@@ -288,9 +293,11 @@ func (b *builder) alternate(a *ast.Alternate) {
 	}
 }
 
-// repeat compiles a quantifier {min,max} greedily. It unrolls the required
-// minimum, then emits the optional part as a loop (max == -1) or a chain of
-// optional copies (bounded max).
+// repeat compiles a quantifier {min,max}. It unrolls the required minimum, then
+// emits the optional part as a loop (max == -1) or a chain of optional copies
+// (bounded max). The split at each optional decision point encodes the matching
+// preference: greedy tries the body first and the exit on backtrack, non-greedy
+// (lazy, s.Greedy == false) tries the exit first and the body only when forced.
 func (b *builder) repeat(s *ast.Star) {
 	// Required copies.
 	for i := 0; i < s.Min; i++ {
@@ -298,29 +305,58 @@ func (b *builder) repeat(s *ast.Star) {
 	}
 	switch {
 	case s.Max == -1:
-		b.starLoop(s.Sub)
+		b.starLoop(s.Sub, s.Greedy)
 	default:
-		// Optional copies: max-min nested optional groups.
+		// Optional copies: max-min nested optional splits. Each split's body
+		// instructions follow immediately; greedy enters the body first (body is the
+		// X/preferred branch) while lazy takes the exit first (body is the Y/give-back
+		// branch, exit becomes X). The exit target is the common end, patched below.
 		var splits []int
 		for i := 0; i < s.Max-s.Min; i++ {
 			split := b.emit(Inst{Op: OpSplit})
 			splits = append(splits, split)
-			b.insts[split].X = len(b.insts)
+			bodyPC := len(b.insts)
+			if s.Greedy {
+				b.insts[split].X = bodyPC
+			} else {
+				b.insts[split].Y = bodyPC
+			}
 			b.node(s.Sub)
 		}
 		end := len(b.insts)
 		for _, sp := range splits {
-			b.insts[sp].Y = end
+			if s.Greedy {
+				b.insts[sp].Y = end
+			} else {
+				b.insts[sp].X = end
+			}
+			// On revisit, the empty-loop guard skips the body and goes to the exit
+			// (the give-back branch for greedy, the preferred branch for lazy).
+			b.insts[sp].GuardTo = end
 		}
 	}
 }
 
-// starLoop emits a greedy unbounded loop over sub: split (prefer body), body,
-// jmp back to split.
-func (b *builder) starLoop(sub ast.Node) {
+// starLoop emits an unbounded loop over sub: split, body, jmp back to split. A
+// greedy loop prefers the body (split.X = body, split.Y = exit); a lazy loop
+// prefers the exit (split.X = exit, split.Y = body), so the body is entered only
+// when continuing past the loop fails.
+func (b *builder) starLoop(sub ast.Node, greedy bool) {
 	split := b.emit(Inst{Op: OpSplit})
-	b.insts[split].X = len(b.insts)
+	bodyPC := len(b.insts)
 	b.node(sub)
 	b.emit(Inst{Op: OpJmp, X: split})
-	b.insts[split].Y = len(b.insts)
+	exitPC := len(b.insts)
+	if greedy {
+		b.insts[split].X = bodyPC
+		b.insts[split].Y = exitPC
+	} else {
+		b.insts[split].X = exitPC
+		b.insts[split].Y = bodyPC
+	}
+	// The empty-loop guard must leave the loop on revisit, regardless of which
+	// branch is the body: it always jumps to the exit. (For a greedy loop the exit
+	// is Y, for a lazy loop it is X — the previous code assumed Y, which spun a
+	// lazy empty loop until the step budget.)
+	b.insts[split].GuardTo = exitPC
 }

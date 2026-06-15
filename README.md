@@ -19,7 +19,8 @@ It is the regexp backend for
 
 > **Status: Phases 0–3 implemented, Phase 4 started** — a greedy backtracking VM with
 > leftmost-first semantics covering literals/escapes, `.`, character classes,
-> anchors (`\A \z \Z ^ $`), greedy quantifiers (`* + ? {m,n}`), capturing and
+> anchors (`\A \z \Z ^ $`), greedy **and non-greedy/lazy** quantifiers
+> (`* + ? {m,n}` and `*? +? ?? {m,n}?`), capturing and
 > non-capturing groups, alternation, named groups `(?<name>…)` and
 > backreferences `\1` / `\k<name>`, plus **lookahead `(?=…)` / `(?!…)`,
 > fixed-width lookbehind `(?<=…)` / `(?<!…)`, the `\G` anchor, and

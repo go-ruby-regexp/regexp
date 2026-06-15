@@ -88,8 +88,17 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   `. * + ? {m,n}`, groups, alternation, anchors `^ $ \A \z`), compiler + a
   minimal backtracking VM. Exit: anchored/greedy matching with captures matches
   MRI on a starter corpus.
-- **Phase 1** — named groups, non-greedy/possessive quantifiers, atomic groups,
-  backreferences.
+- **Phase 1** — named groups, backreferences, and quantifier modes.
+
+  **Non-greedy (lazy) quantifiers** ✅ *done* — `*?`, `+?`, `??`, and `{m,n}?`
+  match the *fewest* repetitions first and take more only when the rest of the
+  pattern forces it, so `<.+?>` on `<a><b>` matches `<a>` and `a{2,4}?` on `aaaa`
+  matches `aa`. They are compiled by swapping the greedy split's preferred/
+  give-back branches (the loop body becomes the give-back branch and the exit the
+  preferred one); the zero-width-loop guard follows a per-split `GuardTo` exit so
+  an empty lazy loop terminates regardless of branch order. Possessive
+  quantifiers (`*+`, `++`, `?+`, `{m,n}+`) and atomic groups `(?>…)` — which share
+  an atomic-cut VM mechanism — are the next increment.
 - **Phase 2** ✅ *done* — lookahead `(?=…)`/`(?!…)`, lookbehind
   `(?<=…)`/`(?<!…)`, the `\G` anchor, and subexpression calls `\g<…>`.
 

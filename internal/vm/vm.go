@@ -188,9 +188,10 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 			key := int64(pc)<<32 | int64(sp)
 			if m.visited[key] {
 				// Already explored this split at this position without
-				// progress; do not re-enter the body. Fall through to the Y
-				// branch directly instead of looping.
-				pc = in.Y
+				// progress; do not re-enter the body. Jump to the split's exit
+				// branch (GuardTo) instead of looping — for a lazy loop the exit is
+				// X, not Y, so a fixed "go to Y" would spin the empty body.
+				pc = in.GuardTo
 				continue
 			}
 			m.visited[key] = true
@@ -399,7 +400,7 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		case compile.OpSplit:
 			key := int64(pc)<<32 | int64(sp)
 			if visited[key] {
-				pc = in.Y
+				pc = in.GuardTo
 				continue
 			}
 			visited[key] = true

@@ -236,6 +236,28 @@ var diffCorpus = []rubyCase{
 	{`\A(?<a>x(?:\g<b>)?)(?<b>y(?:\g<a>)?)\z`, "xyx"},
 	// A recursive arithmetic-expression grammar.
 	{`\A(?<term>(?<num>\d+)|\((?<expr>\g<term>(?:\+\g<term>)*)\))\z`, "(1+2+3)"},
+
+	// Non-greedy (lazy) quantifiers: *? +? ?? {m,n}? prefer the *shortest*
+	// repetition, taking more only when forced, which under backtracking yields
+	// different leftmost-first spans than their greedy forms.
+	{`a*?`, "aaa"},
+	{`a+?`, "aaa"},
+	{`a??b`, "ab"},
+	{`a??`, "a"},
+	{`<.+?>`, "<a><b>"},
+	{`<.*?>`, "<><b>"},
+	{`a{2,4}?`, "aaaa"},
+	{`a{2,}?`, "aaaa"},
+	{`a{0,3}?b`, "aaab"},
+	{`".*?"`, `say "hi" and "bye"`},
+	{`(\w+?)(\w+)`, "abcd"},
+	{`(a|b)*?c`, "abc"},
+	{`x(.*?)x`, "xaxbx"},
+	{`(?:ab)+?`, "ababab"},
+	{`(a?)*?b`, "aaab"},
+	{`(a*)*?b`, "aaab"},
+	{`(a*)*?b`, "aaac"},
+	{`\d+?`, "12345"},
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

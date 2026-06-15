@@ -207,6 +207,59 @@ func TestCompileHasBackref(t *testing.T) {
 	}
 }
 
+func TestCompileLazyStarSwapsSplit(t *testing.T) {
+	// A greedy a* prefers the body: split.X is the body (the next pc), split.Y the
+	// exit. A lazy a*? prefers the exit: the branches are swapped.
+	greedy := compilePattern(t, "a*")
+	lazy := compilePattern(t, "a*?")
+	var gs, ls *Inst
+	for i := range greedy.Insts {
+		if greedy.Insts[i].Op == OpSplit {
+			gs = &greedy.Insts[i]
+		}
+	}
+	for i := range lazy.Insts {
+		if lazy.Insts[i].Op == OpSplit {
+			ls = &lazy.Insts[i]
+		}
+	}
+	if gs == nil || ls == nil {
+		t.Fatal("expected one OpSplit in each of a* and a*?")
+	}
+	// In a*, the split sits just before the body, so its preferred X is split pc+1.
+	for i := range greedy.Insts {
+		if &greedy.Insts[i] == gs {
+			if gs.X != i+1 {
+				t.Errorf("greedy a*: split.X = %d want body at %d", gs.X, i+1)
+			}
+			// Lazy must have the branches swapped: its Y is the body (pc+1), X the exit.
+			if ls.Y != i+1 {
+				t.Errorf("lazy a*?: split.Y = %d want body at %d", ls.Y, i+1)
+			}
+			if ls.X == ls.Y {
+				t.Errorf("lazy a*?: split branches not distinct: %#v", ls)
+			}
+		}
+	}
+}
+
+func TestCompileLazyBoundedSwapsSplit(t *testing.T) {
+	// a{0,2}? emits two optional splits, each preferring the exit (X) over the
+	// body (Y). Confirm at least one split has X pointing past its body.
+	p := compilePattern(t, "a{0,2}?")
+	if opCount(p, OpSplit) != 2 {
+		t.Fatalf("a{0,2}? should emit two splits: %+v", p.Insts)
+	}
+	for i := range p.Insts {
+		if p.Insts[i].Op == OpSplit {
+			// Lazy: the body (an OpChar) is the give-back Y branch.
+			if p.Insts[p.Insts[i].Y].Op != OpChar {
+				t.Errorf("lazy bounded split %d: Y should reach the body OpChar, got %#v", i, p.Insts[p.Insts[i].Y])
+			}
+		}
+	}
+}
+
 func TestCompileCall(t *testing.T) {
 	// A capturing group's body is a callable sub-program terminated by OpReturn;
 	// a \g<…> lowers to an OpCall whose X is patched to the group's entry pc.

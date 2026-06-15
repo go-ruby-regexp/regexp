@@ -270,18 +270,35 @@ func (p *parser) parseQuantifier(atom ast.Node) (ast.Node, error) {
 	switch p.peek() {
 	case '*':
 		p.next()
-		return &ast.Star{Sub: atom, Min: 0, Max: -1}, nil
+		return &ast.Star{Sub: atom, Min: 0, Max: -1, Greedy: p.quantGreedy()}, nil
 	case '+':
 		p.next()
-		return &ast.Star{Sub: atom, Min: 1, Max: -1}, nil
+		return &ast.Star{Sub: atom, Min: 1, Max: -1, Greedy: p.quantGreedy()}, nil
 	case '?':
 		p.next()
-		return &ast.Star{Sub: atom, Min: 0, Max: 1}, nil
+		return &ast.Star{Sub: atom, Min: 0, Max: 1, Greedy: p.quantGreedy()}, nil
 	case '{':
 		return p.parseBrace(atom)
 	default:
 		return atom, nil
 	}
+}
+
+// quantGreedy reads the optional modifier that may follow a quantifier and
+// reports whether the quantifier is greedy. A trailing '?' makes it non-greedy
+// (lazy: a*?, a+?, a??, a{m,n}?), which this consumes and reports as false; with
+// no modifier the quantifier is greedy and nothing is consumed. In extended mode
+// insignificant whitespace between the quantifier and the modifier is skipped
+// first, as Onigmo does. (The possessive modifier '+' is a later increment; until
+// then a trailing '+' is left in place and surfaces as a "nothing to repeat"
+// error, matching the engine's current behaviour.)
+func (p *parser) quantGreedy() bool {
+	p.skipExtended()
+	if !p.eof() && p.peek() == '?' {
+		p.next()
+		return false
+	}
+	return true
 }
 
 // parseBrace parses a {m}, {m,}, or {m,n} repetition. A '{' that is not a valid
@@ -320,7 +337,7 @@ func (p *parser) parseBrace(atom ast.Node) (ast.Node, error) {
 	if max != -1 && max < min {
 		return nil, p.errorf("invalid repetition range {%d,%d}", min, max)
 	}
-	return &ast.Star{Sub: atom, Min: min, Max: max}, nil
+	return &ast.Star{Sub: atom, Min: min, Max: max, Greedy: p.quantGreedy()}, nil
 }
 
 // parseInt reads a non-negative decimal integer. It reports whether at least

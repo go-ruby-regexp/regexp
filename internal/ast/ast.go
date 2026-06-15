@@ -134,11 +134,17 @@ type Alternate struct {
 	Subs []Node
 }
 
-// Star is a greedy quantifier with bounds. Min is the required count; Max is
-// the maximum count, or -1 for unbounded.
+// Star is a quantifier with bounds. Min is the required count; Max is the
+// maximum count, or -1 for unbounded. Greedy selects the matching preference:
+// a greedy quantifier (the default, e.g. a*) tries the longest repetition first
+// and gives back on backtracking, whereas a non-greedy/lazy one (a*?, written
+// with a trailing '?') tries the shortest first and takes more only when forced.
+// Both explore the same set of matches; they differ only in order, so under
+// backtracking they can yield different leftmost-first results.
 type Star struct {
 	Sub      Node
 	Min, Max int
+	Greedy   bool
 }
 
 // Group is a parenthesised sub-expression. When Capture is true it records its
