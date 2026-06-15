@@ -20,12 +20,50 @@ var ErrBudget = errors.New("backtrack step budget exceeded")
 // it.
 const DefaultBudget = 100_000_000
 
+// MaxCallDepth bounds the depth of nested subexpression calls (\g<…>) on the VM's
+// call stack. A recursive grammar (e.g. balanced parentheses, \g<0> whole-pattern
+// recursion) that would otherwise recurse without bound is cut off here so the
+// match fails deterministically rather than exhausting the step budget or the Go
+// stack. It is generous enough that any realistic nesting matches: the canonical
+// balanced-parens idiom needs one call frame per nesting level. A call that would
+// exceed this depth is treated as a local failure (the engine backtracks), which
+// is how Onigmo's own recursion limit surfaces.
+const MaxCallDepth = 4096
+
+// callFrame is one pending subexpression call (\g<…>). group is the called group
+// index, used so only that group's own OpReturn completes the call (a nested
+// group's OpReturn, reached while merely passing linearly through the callee's
+// body, must not steal this frame). ret is the return address (the pc just past
+// the OpCall). saved holds the capture slots of every group that was open (its
+// OpSave-open had fired but its OpSave-close had not) at the moment of the call,
+// paired as (slot, value): on return those slots are restored so a group that
+// recurses into itself keeps its *outer* binding, exactly as Onigmo/Ruby does. A
+// call to a group that is not currently open saves nothing, so that group's
+// freshly matched capture persists (the call's value wins, as in (\d+)-\g<1>
+// where \g<1> re-captures).
+type callFrame struct {
+	group int
+	ret   int
+	saved []slotVal
+}
+
+// slotVal is one (capture-slot index, value) pair recorded for restore-on-return.
+type slotVal struct {
+	slot, val int
+}
+
 // thread is one entry on the backtrack stack: a program counter, an input
-// position, and a snapshot of the capture slots.
+// position, a snapshot of the capture slots, a snapshot of the call stack (the
+// pending subexpression-call return frames), and the stack of currently-open
+// group indices. All are part of the thread because a \g<…> call or an open
+// group entered along one branch must be unwound when the search backtracks to an
+// earlier alternative.
 type thread struct {
-	pc   int
-	sp   int
-	caps []int
+	pc    int
+	sp    int
+	caps  []int
+	calls []callFrame
+	openg []int
 }
 
 // machine holds the per-search execution state.
@@ -63,7 +101,12 @@ func Match(prog *compile.Program, input string, budget int) ([]int, bool, error)
 		input:   input,
 		budget:  budget,
 		visited: make(map[int64]bool),
-		memoize: !prog.HasBackref,
+		// The persistent (pc, sp) memo is sound only when the future is a pure
+		// function of (pc, sp). A backreference reads captured text, and a
+		// subexpression call (\g<…>) re-runs/re-captures a group and carries its own
+		// recursion state, so either makes two arrivals at the same (pc, sp) differ;
+		// memoization is then disabled and the step budget bounds the work.
+		memoize: !prog.HasBackref && !prog.HasCall,
 	}
 	// \G anchors to where the overall search began. For a single Match call that
 	// is position 0; iterative scanning (gsub/scan) advances it on each step,
@@ -96,6 +139,8 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 	clear(m.visited)
 	pc := 0
 	sp := start
+	var calls []callFrame // pending subexpression calls (\g<…>)
+	var openg []int       // indices of groups currently open (for call save/restore)
 	for {
 		if m.budget <= 0 {
 			return nil, false, ErrBudget
@@ -149,7 +194,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				continue
 			}
 			m.visited[key] = true
-			m.push(in.Y, sp, caps)
+			m.push(in.Y, sp, caps, calls, openg)
 			pc = in.X
 			continue
 		case compile.OpJmp:
@@ -157,6 +202,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 			continue
 		case compile.OpSave:
 			caps = m.saveSlot(caps, in.Slot, sp)
+			openg = trackOpen(openg, in.Slot)
 			pc++
 			continue
 		case compile.OpAssertBeginText:
@@ -220,6 +266,34 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				}
 				continue
 			}
+		case compile.OpCall:
+			// A subexpression call (\g<…>): record a return frame (capturing the
+			// slots of every currently-open group so a recursive self-call restores
+			// the outer binding on return) and jump to the callee's entry. The depth
+			// cap turns unbounded recursion into a local failure so the engine
+			// backtracks rather than blowing the Go stack.
+			if len(calls) >= MaxCallDepth {
+				break
+			}
+			calls = append(calls, callFrame{group: in.Slot, ret: pc + 1, saved: saveOpenSlots(caps, openg)})
+			pc = in.X
+			continue
+		case compile.OpReturn:
+			if n := len(calls); n > 0 && calls[n-1].group == in.Slot {
+				// This is the terminator of the group the active call targets:
+				// return to the caller, restoring the open-group captures the call
+				// may have overwritten.
+				f := calls[n-1]
+				calls = calls[:n-1]
+				caps = restoreSlots(caps, f.saved)
+				pc = f.ret
+				continue
+			}
+			// No active call for this group: reached by ordinary execution (or by
+			// passing linearly through a nested group's terminator during an
+			// enclosing group's call). Fall through to the next instruction.
+			pc++
+			continue
 		case compile.OpMatch:
 			return caps, true, nil
 		}
@@ -233,6 +307,8 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 		pc = t.pc
 		sp = t.sp
 		caps = t.caps
+		calls = t.calls
+		openg = t.openg
 	}
 }
 
@@ -273,6 +349,8 @@ func (m *machine) look(lookPC int, in compile.Inst, sp int, caps []int) ([]int, 
 // slots on success.
 func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error) {
 	var stack []thread
+	var calls []callFrame // \g<…> return frames pending inside this sub-search
+	var openg []int       // groups currently open inside this sub-search
 	visited := make(map[int64]bool)
 	pc := body
 	for {
@@ -327,14 +405,34 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 			visited[key] = true
 			snap := make([]int, len(caps))
 			copy(snap, caps)
-			stack = append(stack, thread{pc: in.Y, sp: sp, caps: snap})
+			stack = append(stack, thread{pc: in.Y, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg)})
 			pc = in.X
 			continue
 		case compile.OpJmp:
 			pc = in.X
 			continue
+		case compile.OpCall:
+			// A subexpression call inside a lookaround body, with the same
+			// recursion-depth cap and open-group save/restore as the main search.
+			if len(calls) >= MaxCallDepth {
+				break
+			}
+			calls = append(calls, callFrame{group: in.Slot, ret: pc + 1, saved: saveOpenSlots(caps, openg)})
+			pc = in.X
+			continue
+		case compile.OpReturn:
+			if n := len(calls); n > 0 && calls[n-1].group == in.Slot {
+				f := calls[n-1]
+				calls = calls[:n-1]
+				caps = restoreSlots(caps, f.saved)
+				pc = f.ret
+				continue
+			}
+			pc++
+			continue
 		case compile.OpSave:
 			caps = m.saveSlot(caps, in.Slot, sp)
+			openg = trackOpen(openg, in.Slot)
 			pc++
 			continue
 		case compile.OpAssertBeginText:
@@ -409,6 +507,8 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		pc = t.pc
 		sp = t.sp
 		caps = t.caps
+		calls = t.calls
+		openg = t.openg
 	}
 }
 
@@ -431,10 +531,88 @@ func (m *machine) saveSlot(caps []int, slot, pos int) []int {
 	return nc
 }
 
-func (m *machine) push(pc, sp int, caps []int) {
+func (m *machine) push(pc, sp int, caps []int, calls []callFrame, openg []int) {
 	snap := make([]int, len(caps))
 	copy(snap, caps)
-	m.stack = append(m.stack, thread{pc: pc, sp: sp, caps: snap})
+	m.stack = append(m.stack, thread{pc: pc, sp: sp, caps: snap, calls: snapshotCalls(calls), openg: snapshotInts(openg)})
+}
+
+// snapshotCalls returns an independent copy of a call stack so a backtrack thread
+// keeps its pending-return frames intact while the live stack is mutated. A nil
+// or empty stack snapshots to nil, avoiding an allocation for the common
+// no-active-call case. The per-frame saved slices are immutable once built (a new
+// one is allocated per call), so they are shared rather than deep-copied.
+func snapshotCalls(calls []callFrame) []callFrame {
+	if len(calls) == 0 {
+		return nil
+	}
+	snap := make([]callFrame, len(calls))
+	copy(snap, calls)
+	return snap
+}
+
+// snapshotInts returns an independent copy of an int slice (the open-group stack),
+// or nil when it is empty so the common no-open-group case allocates nothing.
+func snapshotInts(s []int) []int {
+	if len(s) == 0 {
+		return nil
+	}
+	snap := make([]int, len(s))
+	copy(snap, s)
+	return snap
+}
+
+// trackOpen updates the open-group stack for an OpSave at the given slot. An even
+// slot (2*index) opens capture group index; the matching odd slot closes it. The
+// whole-match group 0 (slots 0 and 1) is never a \g<…> self-recursion target in a
+// way that needs restoring beyond what group 0's own OpReturn handles, but it is
+// tracked uniformly so a \g<0> recursion restores the outer whole-match span too.
+func trackOpen(openg []int, slot int) []int {
+	group := slot / 2
+	if slot%2 == 0 {
+		// Open: push the group, copying first so a backtrack snapshot sharing the
+		// backing array is not disturbed.
+		nc := make([]int, len(openg)+1)
+		copy(nc, openg)
+		nc[len(openg)] = group
+		return nc
+	}
+	// Close: pop the matching open. The compiler always pairs an open with its
+	// close on the same path, so the top of the stack is this group.
+	if len(openg) > 0 {
+		return openg[:len(openg)-1]
+	}
+	return openg
+}
+
+// saveOpenSlots records the capture slots (open and close) of every currently
+// open group, so OpReturn can restore them after a \g<…> call. It returns nil
+// when no group is open, which is the common case (a call made outside any
+// capturing group), keeping the hot path allocation-free.
+func saveOpenSlots(caps []int, openg []int) []slotVal {
+	if len(openg) == 0 {
+		return nil
+	}
+	saved := make([]slotVal, 0, 2*len(openg))
+	for _, g := range openg {
+		saved = append(saved, slotVal{slot: 2 * g, val: caps[2*g]}, slotVal{slot: 2*g + 1, val: caps[2*g+1]})
+	}
+	return saved
+}
+
+// restoreSlots writes the recorded (slot, value) pairs back into a fresh copy of
+// caps, undoing the capture writes a returning \g<…> call made to its enclosing
+// groups' slots. When saved is empty caps is returned unchanged.
+func restoreSlots(caps []int, saved []slotVal) []int {
+	if len(saved) == 0 {
+		return caps
+	}
+	nc := make([]int, len(caps))
+	copy(nc, caps)
+	for _, sv := range saved {
+		nc[sv.slot] = sv.val
+	}
+	return nc
 }
 
 // charMatch reports whether input byte b is accepted by an OpChar instruction.

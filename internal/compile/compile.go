@@ -47,6 +47,21 @@ const (
 	OpAssertEndLine
 	// OpBackref matches the text previously captured by group Slot.
 	OpBackref
+	// OpCall invokes a subexpression call (\g<…>): it pushes the return address
+	// (the pc just past this instruction) onto the VM's call stack and jumps to X,
+	// the entry pc of the referenced group's sub-program (group 0's entry is the
+	// whole pattern). The called sub-program re-runs and re-captures, and on
+	// reaching its closing OpReturn control returns to the saved address.
+	OpCall
+	// OpReturn ends the callable sub-program of the group whose index it carries in
+	// Slot. It completes a \g<…> call only when the active call frame is a call to
+	// *this* group (frame.group == Slot): it then pops that frame and jumps to the
+	// saved return address. Otherwise — there is no active call, or the active call
+	// targets an enclosing group and execution is merely passing linearly through a
+	// nested group's terminator — it falls through to the next instruction. Tagging
+	// the return with its group index is what lets a nested group's OpReturn be
+	// skipped during an outer group's recursive call instead of stealing its frame.
+	OpReturn
 	// OpAssertPrevMatch asserts the position equals the scan/previous-match start
 	// (\G).
 	OpAssertPrevMatch
@@ -89,11 +104,18 @@ type Inst struct {
 // succeed, so two arrivals at the same (pc, sp) have identical futures and the
 // later one can be pruned. A backreference makes the future depend on captured
 // text, so memoization is disabled for such programs.
+//
+// HasCall records whether any instruction is a subexpression call (OpCall). A
+// call re-runs and re-captures a group, so like a backreference it makes the
+// future depend on captured/recursive state; the VM therefore disables the
+// persistent (pc, sp) memo for such programs and relies on the recursion-depth
+// and step budgets to bound pathological recursion.
 type Program struct {
 	Insts      []Inst
 	NumCapture int
 	Names      map[string]int
 	HasBackref bool
+	HasCall    bool
 }
 
 // NumSlots returns the number of save slots the VM must allocate (two per
@@ -102,9 +124,21 @@ func (p *Program) NumSlots() int {
 	return 2 * (p.NumCapture + 1)
 }
 
-// builder accumulates instructions during compilation.
+// builder accumulates instructions during compilation. It also records, for each
+// capturing group (and group 0, the whole pattern), the entry pc of its callable
+// sub-program, plus the OpCall sites that must be patched to point at those entry
+// pcs once every group has been laid out — a \g<…> may call a group that is
+// compiled later in the instruction stream.
 type builder struct {
-	insts []Inst
+	insts   []Inst
+	entry   map[int]int // group index → entry pc of its callable sub-program
+	patches []callSite  // OpCall instructions awaiting an entry pc
+}
+
+// callSite is one OpCall instruction (at index pc) and the group index it calls.
+type callSite struct {
+	pc    int
+	group int
 }
 
 func (b *builder) emit(in Inst) int {
@@ -116,19 +150,33 @@ func (b *builder) emit(in Inst) int {
 // pattern in save slots 0/1 (the overall match span) and terminates with
 // OpMatch.
 func Compile(r syntax.Result) *Program {
-	b := &builder{}
+	b := &builder{entry: map[int]int{}}
 	b.emit(Inst{Op: OpSave, Slot: 0})
+	// Group 0's callable sub-program (the target of \g<0>) is the whole pattern,
+	// entered just after the overall-match open save.
+	b.entry[0] = len(b.insts)
 	b.node(r.Root)
 	b.emit(Inst{Op: OpSave, Slot: 1})
+	// An OpReturn (tagged with group index 0) terminates group 0 so a \g<0>
+	// recursion returns here; reached by ordinary execution (no active call to
+	// group 0) it falls through to OpMatch.
+	b.emit(Inst{Op: OpReturn, Slot: 0})
 	b.emit(Inst{Op: OpMatch})
+	// Now that every group's entry pc is known, patch the call sites.
+	for _, c := range b.patches {
+		b.insts[c.pc].X = b.entry[c.group]
+	}
 	hasBackref := false
+	hasCall := false
 	for i := range b.insts {
-		if b.insts[i].Op == OpBackref {
+		switch b.insts[i].Op {
+		case OpBackref:
 			hasBackref = true
-			break
+		case OpCall:
+			hasCall = true
 		}
 	}
-	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref}
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref, HasCall: hasCall}
 }
 
 // node compiles one AST node, appending its instructions.
@@ -158,6 +206,13 @@ func (b *builder) node(n ast.Node) {
 		b.group(t)
 	case *ast.Backref:
 		b.emit(Inst{Op: OpBackref, Slot: t.Index, Fold: t.Fold})
+	case *ast.Call:
+		// Emit a call whose target entry pc is patched in once every group's
+		// sub-program has been laid out (the callee may be defined later). Slot
+		// carries the called group index so OpReturn can tell whether a group's
+		// terminator belongs to this call or is merely on the linear path.
+		pc := b.emit(Inst{Op: OpCall, Slot: t.Index})
+		b.patches = append(b.patches, callSite{pc: pc, group: t.Index})
 	case *ast.Look:
 		b.look(t)
 	case *ast.Star:
@@ -195,9 +250,15 @@ func (b *builder) look(l *ast.Look) {
 
 func (b *builder) group(g *ast.Group) {
 	if g.Capture {
+		// Record this group's entry pc so a \g<index> call can jump here, then emit
+		// the open save, the body, the close save, and an OpReturn that completes a
+		// call (or, with an empty call stack, falls through to whatever follows the
+		// group in ordinary execution).
+		b.entry[g.Index] = len(b.insts)
 		b.emit(Inst{Op: OpSave, Slot: 2 * g.Index})
 		b.node(g.Sub)
 		b.emit(Inst{Op: OpSave, Slot: 2*g.Index + 1})
+		b.emit(Inst{Op: OpReturn, Slot: g.Index})
 		return
 	}
 	b.node(g.Sub)

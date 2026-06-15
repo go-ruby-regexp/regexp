@@ -90,9 +90,44 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   MRI on a starter corpus.
 - **Phase 1** — named groups, non-greedy/possessive quantifiers, atomic groups,
   backreferences.
-- **Phase 2** ✅ *done (except `\g<…>`)* — lookahead `(?=…)`/`(?!…)`,
-  lookbehind `(?<=…)`/`(?<!…)`, and the `\G` anchor. Subexpression calls
-  `\g<…>` remain deferred (tracked under a later phase).
+- **Phase 2** ✅ *done* — lookahead `(?=…)`/`(?!…)`, lookbehind
+  `(?<=…)`/`(?<!…)`, the `\G` anchor, and subexpression calls `\g<…>`.
+
+  **Subexpression calls (`\g<…>`)** ✅ *done* — `\g<name>`, `\g<n>` (absolute
+  group number), the relative forms `\g<+n>` / `\g<-n>`, and `\g<0>` (recurse
+  the whole pattern); the quote-delimited spelling `\g'…'` is accepted too. A
+  call is a **true re-execution** of the referenced group's sub-pattern at the
+  current position and **re-captures** into that group's slot, so the most recent
+  execution wins (`(\d+)-\g<1>` on `12-34` leaves group 1 = `34`) — *except* that
+  a group recursing into itself keeps its **outermost** binding, exactly as
+  Onigmo/Ruby does. The VM implements this with a per-search **call/return
+  stack**: an `OpCall` records a return frame (saving the captures of every
+  currently-open group) and jumps to the callee's entry; the callee's own
+  `OpReturn` pops the frame and restores those open-group captures, while a nested
+  group's `OpReturn` reached on the *linear* path is skipped (each return is
+  tagged with its group index). Forward references — a call to a group defined
+  later in the pattern — resolve in a **post-parse pass**. Calls may be recursive
+  and **mutually recursive**, so the balanced-parentheses idiom
+  `\A(?<bal>\((?:[^()]|\g<bal>)*\))\z` and recursive grammars (arithmetic
+  expressions, nested brackets) work and capture exactly as MRI does.
+
+  **Recursion budget.** Recursion is bounded by a hard depth cap
+  (`vm.MaxCallDepth`, 4096 — one frame per nesting level, generous for any
+  realistic input) integrated with the existing step budget: a call that would
+  exceed the cap is a local failure (the engine backtracks), so a non-terminating
+  grammar such as `\A\g<0>\z` (which Onigmo *rejects statically* with "never
+  ending recursion" — a divergence: this engine accepts it and simply fails to
+  match) terminates deterministically instead of exhausting the Go stack or
+  hanging. A subexpression call, like a backreference, makes the future depend on
+  captured/recursive state, so the persistent `(pc, sp)` ReDoS memo is disabled
+  for call-bearing programs (the depth and step budgets are the backstop).
+
+  **Lookbehind boundary.** A call's matched width is data/recursion-dependent and
+  in general undecidable, so — like a backreference — `\g<…>` is **rejected inside
+  a fixed-width lookbehind** with the same "variable-width lookbehind is not
+  supported" error. (MRI accepts the simple one-character case; this is a
+  documented divergence.) A call is otherwise allowed inside lookahead and
+  lookbehind bodies that do not themselves need a fixed width.
 
   **Lookbehind limitation.** Matching Onigmo/Ruby, each *alternative* of a
   lookbehind body must have a **constant byte width**; different alternatives may

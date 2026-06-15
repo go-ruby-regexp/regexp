@@ -200,6 +200,42 @@ var diffCorpus = []rubyCase{
 	{`[\p{L}\d]+`, "ab12!cd"},
 	{`[^\p{L}]+`, "ab12!cd"},
 	{`[\p{Lu}x]+`, "xXAby"},
+
+	// Subexpression calls \g<…> (this phase). A call re-runs and re-captures the
+	// referenced group's sub-pattern; these are ASCII, so byte and character
+	// offsets coincide and the exact-span comparison applies.
+	{`(\d+)-\g<1>`, "12-34"},                            // absolute number, re-captures
+	{`(\d)\g<1>`, "12"},                                 // adjacent call
+	{`(\d)\g<1>`, "1"},                                  // call needs a second char: no match
+	{`(\w)\g<1>`, "ab"},                                 // word
+	{`(a|b)\g<1>`, "ab"},                                // call re-runs the alternation
+	{`(?<two>\d)\g<two>`, "34"},                         // named call
+	{`\g<two>(?<two>\d+)`, "123"},                       // forward named reference
+	{`\g<+1>(\d)`, "55"},                                // relative forward (needs two)
+	{`\g<+1>(\d)`, "5"},                                 // relative forward: one char, no match
+	{`(\d)\g<-1>`, "12"},                                // relative backward
+	{`(a)(b)\g<-2>\g<-1>`, "abab"},                      // two relative backward calls
+	{`(x)(\d)\g<2>`, "x12"},                             // call one of several groups
+	{`(\d)\g<1>\1`, "122"},                              // backref sees the call's re-capture
+	{`(\d)\g<1>\1`, "121"},                              // re-capture makes the backref fail
+	{`(?<x>\d)\g<x>+`, "1234"},                          // a quantified call
+	{`(?=(\d)\g<1>)\d+`, "12x"},                         // call inside a lookahead
+	{`foo(?=\g<1>)(bar)`, "foobar"},                     // forward call inside a lookahead
+	{`\((?:[^()]|\g<0>)*\)`, "((x))"},                   // \g<0> whole-pattern recursion
+	{`\((?:[^()]|\g<0>)*\)`, "(()"},                     // unbalanced: no match
+	{`(?<bal>\((?:[^()]|\g<bal>)*\))`, "(a(b)c)"},       // balanced parens, named recursion
+	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "((()))"},    // deep balanced parens, anchored
+	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "(()"},       // unbalanced, anchored: no match
+	{`\A(?<e>(?:[^<>]|<\g<e>>)*)\z`, "a<b<c>d>e"},      // balanced angle brackets grammar
+	{`\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`, "((((((((((x))))))))))"}, // deep nesting still matches
+	// A sub-capture inside a recursive group keeps its *deepest* binding (it is not
+	// active at the recursive call sites), while the recursive group keeps its
+	// *outermost* binding — both must match MRI's exact spans.
+	{`\A(?<b>\((?<inner>[^()]*)(?:\g<b>)?[^()]*\))\z`, "(a(b)c)"},
+	// Mutual recursion between two named groups.
+	{`\A(?<a>x(?:\g<b>)?)(?<b>y(?:\g<a>)?)\z`, "xyx"},
+	// A recursive arithmetic-expression grammar.
+	{`\A(?<term>(?<num>\d+)|\((?<expr>\g<term>(?:\+\g<term>)*)\))\z`, "(1+2+3)"},
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI

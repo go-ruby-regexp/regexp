@@ -63,14 +63,27 @@ type flags struct {
 	extended bool // extended mode: ignore unescaped whitespace and # comments (x)
 }
 
+// pendingCall records a \g<…> subexpression call whose target cannot be resolved
+// to an absolute group index at the point it is parsed — a \g<name> or \g<n>
+// reference may name a group defined later in the pattern. The relative forms
+// \g<+n>/\g<-n> are resolved immediately (they are positional) and so never
+// become a pendingCall. After the whole pattern is parsed, resolveCalls walks
+// these and fills each node's Index, erroring on an undefined name or number.
+type pendingCall struct {
+	node *ast.Call
+	name string // \g<name>: empty when the reference was numeric
+	num  int    // \g<n>: the absolute group number; used only when name == ""
+}
+
 // parser is a single-use recursive-descent parser over the pattern bytes.
 type parser struct {
 	src        string
 	pos        int
 	ncap       int
 	names      map[string]int
-	maxBackref int   // largest numeric backreference seen, validated after parsing
-	flags      flags // inline option state at the cursor (e.g. /i via (?i))
+	maxBackref int           // largest numeric backreference seen, validated after parsing
+	calls      []pendingCall // \g<name>/\g<n> references awaiting post-parse resolution
+	flags      flags         // inline option state at the cursor (e.g. /i via (?i))
 }
 
 // Parse compiles a pattern string into an AST. It returns an error wrapping
@@ -89,7 +102,34 @@ func Parse(pattern string) (Result, error) {
 	if p.maxBackref > p.ncap {
 		return Result{}, p.errorf("invalid backreference \\%d", p.maxBackref)
 	}
+	if err := p.resolveCalls(); err != nil {
+		return Result{}, err
+	}
 	return Result{Root: node, NumCapture: p.ncap, Names: p.names}, nil
+}
+
+// resolveCalls fills in the absolute group Index of every \g<name>/\g<n>
+// subexpression call that could not be resolved while parsing (a forward
+// reference). A \g<name> resolves through the named-group map; a \g<n> must name
+// an existing group (1..ncap) — \g<0> (the whole pattern) is always valid and is
+// stored directly by the parser, so it never appears here. An unknown name or an
+// out-of-range number is a syntax error, matching Onigmo/Ruby.
+func (p *parser) resolveCalls() error {
+	for _, c := range p.calls {
+		if c.name != "" {
+			idx, ok := p.names[c.name]
+			if !ok {
+				return p.errorf("undefined group name <%s> for \\g", c.name)
+			}
+			c.node.Index = idx
+			continue
+		}
+		if c.num < 1 || c.num > p.ncap {
+			return p.errorf("undefined group <%d> for \\g", c.num)
+		}
+		c.node.Index = c.num
+	}
+	return nil
 }
 
 func (p *parser) errorf(format string, args ...any) error {
@@ -573,6 +613,12 @@ func fixedWidth(n ast.Node) bool {
 	case *ast.Backref:
 		// Width depends on captured text at match time.
 		return false
+	case *ast.Call:
+		// A subexpression call re-runs another group's sub-pattern, whose matched
+		// width is not a compile-time constant in general (and is formally
+		// undecidable once the call is recursive). Like a backreference, it is
+		// therefore disqualified from a fixed-width lookbehind body.
+		return false
 	case *ast.Group:
 		return fixedWidth(t.Sub)
 	case *ast.Concat:
@@ -710,6 +756,8 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Backref{Index: idx, Fold: p.flags.fold}, nil
 	case 'k':
 		return p.parseNamedBackref()
+	case 'g':
+		return p.parseCall()
 	case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
 		return &ast.Literal{B: b}, nil
 	case ' ', '\t', '\n', '\f', '\r', '#':
@@ -772,6 +820,112 @@ func (p *parser) parseNamedBackref() (ast.Node, error) {
 		return nil, p.errorf("undefined group name <%s>", name)
 	}
 	return &ast.Backref{Index: idx, Fold: p.flags.fold}, nil
+}
+
+// parseCall parses a \g<…> subexpression call, whose introducing 'g' has just
+// been consumed. The target may be spelled four ways, all of which Onigmo/Ruby
+// accept and which resolve to an absolute, 1-based group index (0 = the whole
+// pattern):
+//
+//	\g<name>   a named group; resolved through the named-group map, possibly a
+//	           forward reference (deferred to resolveCalls).
+//	\g<n>      an absolute group number; \g<0> recurses the whole pattern and is
+//	           valid immediately, any other number is validated in resolveCalls.
+//	\g<+n>     a relative forward reference: the n-th group whose '(' comes after
+//	           this token. Positional, so resolved here from the current count.
+//	\g<-n>     a relative backward reference: the n-th group whose '(' came
+//	           before this token (\g<-1> is the nearest preceding group).
+//
+// Onigmo also accepts the quote delimiters \g'…'; both are handled. Matching
+// Onigmo, a leading-zero number such as \g<01> and the degenerate \g<+0>/\g<-0>
+// are rejected.
+func (p *parser) parseCall() (ast.Node, error) {
+	if p.eof() || (p.peek() != '<' && p.peek() != '\'') {
+		return nil, p.errorf("expected <name> or <n> after \\g")
+	}
+	open := p.next()
+	close := byte('>')
+	if open == '\'' {
+		close = '\''
+	}
+	start := p.pos
+	for !p.eof() && p.peek() != close {
+		p.next()
+	}
+	if p.eof() {
+		return nil, p.errorf("missing %c in \\g", close)
+	}
+	body := p.src[start:p.pos]
+	p.next() // consume the closing delimiter
+	if body == "" {
+		return nil, p.errorf("empty \\g name")
+	}
+	node := &ast.Call{}
+	switch {
+	case body[0] == '+' || body[0] == '-':
+		n, ok := parseDecimal(body[1:])
+		if !ok || n == 0 {
+			return nil, p.errorf("invalid relative \\g reference <%s>", body)
+		}
+		// Relative references are positional: +n counts groups opened after this
+		// token (the next group is ncap+1), -n counts groups already opened (the
+		// nearest preceding is ncap). resolveCalls then range-checks the result.
+		var idx int
+		if body[0] == '+' {
+			idx = p.ncap + n
+		} else {
+			idx = p.ncap + 1 - n
+		}
+		p.calls = append(p.calls, pendingCall{node: node, num: idx})
+	case body[0] >= '0' && body[0] <= '9':
+		n, ok := parseDecimal(body)
+		if !ok || (len(body) > 1 && body[0] == '0') {
+			// A leading-zero number (\g<01>) is rejected by Onigmo.
+			return nil, p.errorf("invalid \\g number <%s>", body)
+		}
+		if n == 0 {
+			// \g<0> recurses the whole pattern; it is always valid.
+			node.Index = 0
+		} else {
+			p.calls = append(p.calls, pendingCall{node: node, num: n})
+		}
+	default:
+		if !validGroupName(body) {
+			return nil, p.errorf("invalid \\g name <%s>", body)
+		}
+		p.calls = append(p.calls, pendingCall{node: node, name: body})
+	}
+	return node, nil
+}
+
+// parseDecimal parses s as a non-negative decimal integer with no sign and no
+// other characters, reporting success. It backs \g<n>/\g<+n>/\g<-n> where the
+// reference body was already isolated between the delimiters.
+func parseDecimal(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, true
+}
+
+// validGroupName reports whether s is a syntactically valid group name (the same
+// character set parseGroupName accepts for a (?<name>…) definition): one or more
+// of letters, digits and underscore. It guards a \g<name> reference body.
+func validGroupName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // perlClass builds the Class node for one of the Perl class escapes \d \D \w \W

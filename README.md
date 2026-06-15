@@ -22,7 +22,8 @@ It is the regexp backend for
 > anchors (`\A \z \Z ^ $`), greedy quantifiers (`* + ? {m,n}`), capturing and
 > non-capturing groups, alternation, named groups `(?<name>…)` and
 > backreferences `\1` / `\k<name>`, plus **lookahead `(?=…)` / `(?!…)`,
-> fixed-width lookbehind `(?<=…)` / `(?<!…)`, and the `\G` anchor**, and from
+> fixed-width lookbehind `(?<=…)` / `(?<!…)`, the `\G` anchor, and
+> subexpression calls `\g<…>`** (named/numbered/relative/`\g<0>`, recursive), and from
 > Phase 3 **POSIX bracket classes `[[:alpha:]]` … `[[:^digit:]]`**
 > (the 14 standard classes, positive and negated) inside character classes, and
 > the **inline options `(?imx)` / `(?imx:…)`** (with `(?-…)` to turn them off) —
@@ -50,9 +51,18 @@ It is the regexp backend for
 > byte-exact, and match offsets are **byte** offsets (MRI reports character
 > offsets, so the engines agree on matched text but not on the numeric span on
 > multi-byte input); a rune-aware atom never matches at a UTF-8 continuation byte
-> and is rejected inside a fixed-width lookbehind. Subexpression calls `\g<…>` are
-> next. See **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture
-> and roadmap.
+> and is rejected inside a fixed-width lookbehind.
+>
+> **Subexpression calls (`\g<…>`).** `\g<name>`, `\g<n>`, relative `\g<+n>` /
+> `\g<-n>`, and `\g<0>` (whole-pattern recursion) **re-run and re-capture** the
+> referenced group, with last-execution-wins captures except that a self-recursive
+> group keeps its **outermost** binding — exactly as Onigmo/Ruby. Forward
+> references resolve post-parse; recursive and mutually recursive grammars (e.g.
+> balanced parentheses `\A(?<bal>\((?:[^()]|\g<bal>)*\))\z`) work. A per-search
+> **call/return stack** drives this, with a hard **recursion-depth cap** plus the
+> step budget so a non-terminating grammar fails deterministically. A call has
+> data-dependent width, so it is rejected inside a fixed-width lookbehind. See
+> **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture and roadmap.
 
 ## Why not the standard library?
 

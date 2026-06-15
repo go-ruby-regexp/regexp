@@ -36,8 +36,14 @@ func TestCompileWrapsSaveAndMatch(t *testing.T) {
 	if last.Op != OpMatch {
 		t.Fatalf("last inst must be Match, got %#v", last)
 	}
-	if p.Insts[len(p.Insts)-2].Op != OpSave || p.Insts[len(p.Insts)-2].Slot != 1 {
-		t.Fatalf("penultimate inst must be Save 1")
+	// The whole pattern is itself a callable sub-program (the target of \g<0>): an
+	// OpReturn precedes OpMatch so a \g<0> recursion returns, and the overall-match
+	// close save precedes that OpReturn.
+	if p.Insts[len(p.Insts)-2].Op != OpReturn {
+		t.Fatalf("inst before Match must be Return, got %#v", p.Insts[len(p.Insts)-2])
+	}
+	if p.Insts[len(p.Insts)-3].Op != OpSave || p.Insts[len(p.Insts)-3].Slot != 1 {
+		t.Fatalf("inst before Return must be Save 1")
 	}
 }
 
@@ -107,9 +113,9 @@ func TestCompileExactRepeat(t *testing.T) {
 
 func TestCompileEmpty(t *testing.T) {
 	p := compilePattern(t, "")
-	// Just Save0, Save1, Match.
-	if len(p.Insts) != 3 {
-		t.Fatalf("empty pattern should compile to 3 insts, got %d", len(p.Insts))
+	// Save0, Save1, Return (group-0 boundary), Match.
+	if len(p.Insts) != 4 {
+		t.Fatalf("empty pattern should compile to 4 insts, got %d", len(p.Insts))
 	}
 }
 
@@ -197,6 +203,68 @@ func TestCompileHasBackref(t *testing.T) {
 	} {
 		if got := compilePattern(t, tc.pat).HasBackref; got != tc.want {
 			t.Errorf("/%s/ HasBackref = %v want %v", tc.pat, got, tc.want)
+		}
+	}
+}
+
+func TestCompileCall(t *testing.T) {
+	// A capturing group's body is a callable sub-program terminated by OpReturn;
+	// a \g<…> lowers to an OpCall whose X is patched to the group's entry pc.
+	p := compilePattern(t, `(a)\g<1>`)
+	if !p.HasCall {
+		t.Fatal("HasCall must be set for a \\g<…> program")
+	}
+	var call *Inst
+	returns := 0
+	for i := range p.Insts {
+		switch p.Insts[i].Op {
+		case OpCall:
+			call = &p.Insts[i]
+		case OpReturn:
+			returns++
+		}
+	}
+	if call == nil {
+		t.Fatal("no OpCall emitted")
+	}
+	// Group 1's entry is its open save (Save slot 2); OpCall.X must point there.
+	tgt := p.Insts[call.X]
+	if tgt.Op != OpSave || tgt.Slot != 2 {
+		t.Fatalf("OpCall.X (%d) must be the group-1 open save, got %#v", call.X, tgt)
+	}
+	// One OpReturn for group 1, one for the whole-pattern group 0.
+	if returns != 2 {
+		t.Fatalf("expected two OpReturn (group 1 + group 0), got %d", returns)
+	}
+}
+
+func TestCompileCallG0(t *testing.T) {
+	// \g<0> recurses the whole pattern: its OpCall.X is the entry of group 0, the
+	// instruction just after the overall-match open save (pc 1).
+	p := compilePattern(t, `a\g<0>?`)
+	for i := range p.Insts {
+		if p.Insts[i].Op == OpCall {
+			if p.Insts[i].X != 1 {
+				t.Fatalf("\\g<0> OpCall.X = %d want 1 (group-0 entry)", p.Insts[i].X)
+			}
+			return
+		}
+	}
+	t.Fatal("no OpCall emitted for \\g<0>")
+}
+
+func TestCompileHasCall(t *testing.T) {
+	for _, tc := range []struct {
+		pat  string
+		want bool
+	}{
+		{`(a)\g<1>`, true},
+		{`\g<0>?`, true},
+		{`(a)\1`, false},
+		{`(a)(b)`, false},
+	} {
+		if got := compilePattern(t, tc.pat).HasCall; got != tc.want {
+			t.Errorf("/%s/ HasCall = %v want %v", tc.pat, got, tc.want)
 		}
 	}
 }

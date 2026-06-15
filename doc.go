@@ -53,10 +53,27 @@
 // span on multi-byte input. (Rune-level Unicode case-folding for /i is described
 // above.)
 //
-// ReDoS hardening (Phase 4) is in: for a pattern without a backreference the VM
-// memoizes the (instruction, position) split states it has explored and never
-// re-explores one, so catastrophic patterns such as (a+)+$ run in polynomial
-// rather than exponential time while producing the identical leftmost-first
-// match. A deterministic step budget remains as the backstop. See
-// docs/plan-regexp.md for the full roadmap.
+// Subexpression calls \g<…> are implemented: \g<name>, \g<n> (absolute group
+// number), the relative forms \g<+n> / \g<-n>, and \g<0> (recurse the whole
+// pattern). A call is a true re-execution of the referenced group's sub-pattern
+// at the current position, and it re-captures into that group's slot, so the
+// most recent execution wins — except that a group recursing into itself keeps
+// its outermost binding, exactly as Onigmo/Ruby does (the engine saves and
+// restores the open groups' captures across a call). Calls may be recursive and
+// mutually recursive, so the balanced-parentheses idiom
+// \A(?<bal>\((?:[^()]|\g<bal>)*\))\z works. Forward references (calling a group
+// defined later) resolve in a post-parse pass. Recursion is bounded by a hard
+// depth cap plus the step budget, so a pathological or non-terminating grammar
+// (e.g. \A\g<0>\z, which Onigmo rejects statically) fails deterministically
+// rather than exhausting the Go stack. A call has data/recursion-dependent
+// width, so — like a backreference — it is rejected inside a fixed-width
+// lookbehind (a documented divergence: MRI accepts the simple one-char case).
+//
+// ReDoS hardening (Phase 4) is in: for a pattern without a backreference or a
+// subexpression call the VM memoizes the (instruction, position) split states it
+// has explored and never re-explores one, so catastrophic patterns such as
+// (a+)+$ run in polynomial rather than exponential time while producing the
+// identical leftmost-first match. A deterministic step budget (and, for calls,
+// the recursion-depth cap) remains as the backstop. See docs/plan-regexp.md for
+// the full roadmap.
 package onigmo

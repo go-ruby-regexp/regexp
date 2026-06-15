@@ -159,6 +159,19 @@ type Backref struct {
 	Fold  bool
 }
 
+// Call is a subexpression call \g<…>. It re-runs the referenced group's
+// sub-pattern at the current position and re-captures into that group's slot,
+// exactly as Onigmo/Ruby does (the most recent execution of a group wins).
+// Index is the absolute, 1-based group number the textual reference resolved to
+// (0 means the whole pattern, \g<0>, i.e. recurse the entire regex). The various
+// reference spellings — \g<name>, \g<n>, relative \g<+n>/\g<-n>, and \g<0> — are
+// all resolved to this absolute Index in a post-parse pass, so a forward call
+// (to a group defined later in the pattern) works. Calls may be recursive; the
+// VM bounds recursion depth and total steps so a pathological grammar terminates.
+type Call struct {
+	Index int
+}
+
 // Look is a zero-width lookaround assertion. Behind selects lookbehind over
 // lookahead, and Negate selects the negative form. Sub is the sub-pattern run
 // at (lookahead) or ending at (lookbehind) the current position; the outer
@@ -185,5 +198,6 @@ func (*Alternate) isNode()   {}
 func (*Star) isNode()        {}
 func (*Group) isNode()       {}
 func (*Backref) isNode()     {}
+func (*Call) isNode()        {}
 func (*Look) isNode()        {}
 func (*Empty) isNode()       {}
