@@ -310,11 +310,27 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   decodes leniently as the replacement rune (width 1) rather than raising as MRI
   does — a documented divergence.
 
-  Still to come in multi-encoding: **literal multi-byte character-class members**
-  (`[é]`, `[à-ï]` — these still parse as raw bytes, a pre-existing
-  representation gap that needs the parser to emit code-point class members), and
-  **per-encoding cursors beyond UTF-8 / ASCII-8BIT** (UTF-16/32, EUC, Shift_JIS),
-  each its own increment.
+  **Multi-encoding — literal multi-byte character-class members** ✅ *done* — in
+  UTF8 mode a non-ASCII literal inside a character class is now a whole **code
+  point** and a non-ASCII range is a **code-point range**, so `[é]` matches the
+  character `"é"`, `[à-ï]` matches that code-point range, `[αβγ]`/`[中文]` work,
+  and a mixed class such as `[a-zé]` combines an ASCII byte range with a
+  multi-byte member. A range may span ASCII into the multi-byte space (`[a-é]` is
+  `U+0061..U+00E9`, so `"z"` and `"à"` match but `"ÿ"` does not), and an inverted
+  range (`[é-à]`, `[ï-a]`) is rejected just as MRI raises "empty range". The
+  parser reuses the rune-aware class machinery (`RuneClassRange`) already driving
+  `\p{…}` and `/i`-folded classes: a non-ASCII member is decoded whole into a
+  code-point range, which makes the whole class rune-aware, while an all-ASCII
+  range (`[a-z]`) stays a byte range so the class remains byte-oriented when
+  nothing forces rune awareness. Negation (`[^é]`), `/i` folding, `\p{…}`
+  members, and combinations all compose. In **ASCII8BIT** mode the class stays
+  byte-oriented and a high byte is a single-byte member (`[é]` in `/n` is the two
+  byte members `0xC3` and `0xA9`), exactly as MRI's `/n`. Verified against the MRI
+  differential corpus (substring-compared) plus oracle-independent unit tests
+  covering every branch including the binary-mode range-error paths.
+
+  Still to come in multi-encoding: **per-encoding cursors beyond UTF-8 /
+  ASCII-8BIT** (UTF-16/32, EUC, Shift_JIS), each its own increment.
 - **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
   wall-clock timeout), optimizer (✅ start-position prefilter: anchors, literal
   prefixes, first-byte sets, alternation-aware; ✅ required-interior-literal

@@ -1157,6 +1157,13 @@ func (p *parser) parseClass() (ast.Node, error) {
 		p.next()
 		cls.Negate = true
 	}
+	// A non-ASCII member is interpreted as a whole code point — and a range bound
+	// as a code point — whenever the class is rune-aware: under /i (folding makes
+	// the class rune-aware) or in UTF8 mode (where a literal multi-byte character
+	// such as [é] or a range such as [à-ï] is one code point, exactly as MRI
+	// treats it on a UTF-8 string). In ASCII8BIT (binary, /n) mode the class stays
+	// byte-oriented and a high byte is a single-byte member, so this is off.
+	runeAware := cls.Fold || p.enc == UTF8
 	// A ']' as the first member is a literal ']' in Ruby/Onigmo.
 	first := true
 	for {
@@ -1179,14 +1186,14 @@ func (p *parser) parseClass() (ast.Node, error) {
 			cls.Ranges = append(cls.Ranges, ranges...)
 			continue
 		}
-		// Under case-insensitive mode the class is rune-aware, so a member that is
-		// a multi-byte UTF-8 code point (e.g. (?i)[é] or a bound of (?i)[α-ω]) is
-		// decoded as a whole rune into a RuneRange rather than its raw bytes. A '\'
-		// escape is left to parseClassItem below, which yields only ASCII
-		// bytes/ranges/properties. Outside /i this branch is skipped and the class
-		// stays byte-oriented, matching the engine's rune/byte boundary.
-		if cls.Fold && p.peek() >= 0x80 {
-			if err := p.parseFoldRuneMember(cls); err != nil {
+		// When the class is rune-aware (under /i, or in UTF8 mode), a member that
+		// is a multi-byte UTF-8 code point (e.g. [é], (?i)[é], or a bound of
+		// [α-ω]) is decoded as a whole rune into a RuneRange rather than its raw
+		// bytes. A '\' escape is left to parseClassItem below, which yields only
+		// ASCII bytes/ranges/properties. In ASCII8BIT mode this branch is skipped
+		// and a high byte stays a byte-oriented member, matching MRI's /n.
+		if runeAware && p.peek() >= 0x80 {
+			if err := p.parseRuneMember(cls); err != nil {
 				return nil, err
 			}
 			continue
@@ -1205,14 +1212,19 @@ func (p *parser) parseClass() (ast.Node, error) {
 			cls.Ranges = append(cls.Ranges, sub...)
 			continue
 		}
-		// Possible range lo-hi.
+		// Possible range lo-hi. Here lo is always an ASCII byte: a multi-byte low
+		// bound was consumed by parseRuneMember above.
 		if !p.eof() && p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
 			p.next() // consume '-'
-			// Under /i the high bound may be a multi-byte code point even when the
-			// low bound was ASCII (e.g. (?i)[a-é]); parseClassRangeBound decodes it
-			// whole and the range becomes a rune range when either bound exceeds the
-			// byte space. Outside /i the high bound is a single byte as before.
-			if cls.Fold {
+			// In a rune-aware class the high bound may itself be a multi-byte code
+			// point even when the low bound is ASCII (e.g. [a-é] or (?i)[a-é]):
+			// parseClassRangeBound decodes it whole, so the range spans ASCII into
+			// the multi-byte space as a code-point range. Under /i every such range
+			// is recorded as a rune range (the existing fold behaviour); under plain
+			// UTF8 a range whose high bound is also ASCII (e.g. [a-z]) stays a byte
+			// range, keeping the class byte-oriented when no multi-byte member forces
+			// rune awareness.
+			if runeAware {
 				hi, err := p.parseClassRangeBound()
 				if err != nil {
 					return nil, err
@@ -1220,7 +1232,11 @@ func (p *parser) parseClass() (ast.Node, error) {
 				if hi < rune(lo) {
 					return nil, p.errorf("invalid range %q-%q in character class", lo, hi)
 				}
-				cls.RuneRanges = append(cls.RuneRanges, ast.RuneClassRange{Lo: rune(lo), Hi: hi})
+				if cls.Fold || hi >= 0x80 {
+					cls.RuneRanges = append(cls.RuneRanges, ast.RuneClassRange{Lo: rune(lo), Hi: hi})
+				} else {
+					cls.Ranges = append(cls.Ranges, ast.ClassRange{Lo: lo, Hi: byte(hi)})
+				}
 				continue
 			}
 			hi, subHi, propHi, err := p.parseClassItem()
@@ -1240,13 +1256,15 @@ func (p *parser) parseClass() (ast.Node, error) {
 	}
 }
 
-// parseFoldRuneMember parses one multi-byte code-point member (or the low bound
-// of a code-point range) inside a case-insensitive class, whose lead byte is at
-// the cursor. It decodes the whole code point, and if a '-' (not the closing
-// "-]") follows, the high bound — which may itself be a multi-byte rune or an
-// ASCII byte — completing a RuneRange. A single member becomes the degenerate
-// range lo..lo. The decoded high bound must not be below the low bound.
-func (p *parser) parseFoldRuneMember(cls *ast.Class) error {
+// parseRuneMember parses one multi-byte code-point member (or the low bound of a
+// code-point range) inside a rune-aware class — one under /i, or any class in
+// UTF8 mode — whose lead byte is at the cursor. It decodes the whole code point,
+// and if a '-' (not the closing "-]") follows, the high bound — which may itself
+// be a multi-byte rune or an ASCII byte — completes a RuneRange. A single member
+// becomes the degenerate range lo..lo. The decoded high bound must not be below
+// the low bound. The members are always recorded as RuneRanges: the low bound
+// here is multi-byte, so the range cannot be expressed as a byte range.
+func (p *parser) parseRuneMember(cls *ast.Class) error {
 	lo, size := utf8.DecodeRuneInString(p.src[p.pos:])
 	p.pos += size
 	if !p.eof() && p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
@@ -1266,7 +1284,8 @@ func (p *parser) parseFoldRuneMember(cls *ast.Class) error {
 }
 
 // parseClassRangeBound reads the high bound of a code-point range in a
-// case-insensitive class. The bound is a single code point: a multi-byte rune is
+// rune-aware class (under /i, or any class in UTF8 mode). The bound is a single
+// code point: a multi-byte rune is
 // decoded whole; otherwise a single byte (which may be a '\'-escaped ASCII
 // character such as \n) is taken. A class escape (\d) or property (\p{…}) is not
 // a valid range bound, mirroring the byte-oriented parser's rejection.

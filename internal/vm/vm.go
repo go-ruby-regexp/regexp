@@ -992,10 +992,11 @@ func rangeRuneMatch(in compile.Inst, r rune) bool {
 			return true
 		}
 	}
-	// RuneRanges hold multi-byte code-point members: either a folded class's
-	// non-ASCII members (parseFoldRuneMember, under /i) or \R's linebreak set
-	// (NEL/LS/PS), which is not folded. Membership uses simple case folding only
-	// when the class is folded; otherwise it is a plain inclusive containment.
+	// RuneRanges hold multi-byte code-point members: a literal multi-byte member
+	// or range in UTF8 mode (e.g. [é] or [à-ï]), a folded class's non-ASCII
+	// members (under /i), or \R's linebreak set (NEL/LS/PS), which is not folded.
+	// Membership uses simple case folding only when the class is folded;
+	// otherwise it is a plain inclusive containment.
 	for _, rg := range in.RuneRanges {
 		if in.Fold {
 			if charset.FoldRangeContains(r, rg.Lo, rg.Hi) {

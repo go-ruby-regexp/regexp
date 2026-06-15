@@ -95,8 +95,12 @@ It is the regexp backend for
 > folding and `\p{…}` operate per byte, ASCII-only. A bare `.`/byte-class inside a
 > fixed-width lookbehind has variable byte width (1..4) in `UTF8` mode and the
 > candidate-position scan finds the character-aligned start, so `(?<=.)x` matches.
-> Literal multi-byte class members (`[é]`, `[à-ï]`) and encodings beyond UTF-8 /
-> ASCII-8BIT are follow-ups.
+> A **literal multi-byte character-class member** is a whole code point in `UTF8`
+> mode: `[é]` matches `"é"`, `[à-ï]` is a code-point range, `[αβγ]`/`[中文]` work,
+> a mixed class such as `[a-zé]` combines an ASCII range with a multi-byte member,
+> and a range may span ASCII into the multi-byte space (`[a-é]`). In `ASCII8BIT`
+> mode such a member stays byte-oriented (`[é]` is its two raw bytes). Encodings
+> beyond UTF-8 / ASCII-8BIT are follow-ups.
 >
 > **Subexpression calls (`\g<…>`).** `\g<name>`, `\g<n>`, relative `\g<+n>` /
 > `\g<-n>`, and `\g<0>` (whole-pattern recursion) **re-run and re-capture** the

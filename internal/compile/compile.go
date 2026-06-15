@@ -122,7 +122,7 @@ type Inst struct {
 	Quant      bool                 // OpSplit: this split is a quantifier (*, +, ?, {m,n}) decision, not an alternation fork. Its GuardTo is the deterministic continuation past the whole quantifier, which the prefilter's mandatory-spine walk follows; an alternation split (Quant=false) is a true branch the spine must stop at.
 	Slot       int                  // OpSave
 	Ranges     []ast.ClassRange     // OpClass
-	RuneRanges []ast.RuneClassRange // OpClass (rune-aware code-point ranges, /i)
+	RuneRanges []ast.RuneClassRange // OpClass (rune-aware code-point ranges: literal multi-byte members in UTF8, /i-folded members, \R)
 	Props      []ast.PropRef        // OpClass (rune-aware members)
 	Prop       ast.PropRef          // OpUniProp
 	Negate     bool                 // OpClass, OpLook

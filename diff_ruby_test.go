@@ -441,6 +441,30 @@ var diffUnicodeCorpus = []rubyCase{
 	{`(?<=.)x`, "éx"},
 	{`(?<=a.)c`, "aéc"},
 	{`(?<=[^q])z`, "中z"},
+
+	// Literal multi-byte character-class members (Phase 3, this increment): in
+	// UTF-8 mode a non-ASCII literal inside a class is a whole code point and a
+	// non-ASCII range is a code-point range, exactly as MRI treats them on a
+	// UTF-8 string. Compared by substring because the offsets differ in
+	// representation (characters vs bytes) but the matched text is identical.
+	{`[é]`, "héllo"},                    // single multi-byte member
+	{`[é]`, "abc"},                      // no match
+	{`[^é]+`, "héllo"},                  // negated: every char but é, whole code points
+	{`[é]`, "naïve"},                    // no match (ï is not é)
+	{`[à-ï]+`, "çàèé z"},                // multi-byte code-point range
+	{`[à-ï]`, "ABC"},                    // no match
+	{`[αβγ]+`, "βγαδ"},                  // enumerated Greek members
+	{`[α-ω]+`, "λμνΑ"},                  // Greek range (uppercase Α excluded)
+	{`[a-zé]+`, "abcéZ"},                // mixed ASCII range plus a multi-byte member
+	{`[a-zé]`, "Z"},                     // no match (uppercase, and not é)
+	{`[a-é]+`, "azé!"},                  // range spanning ASCII into the multi-byte space
+	{`[a-é]`, "à"},                      // à (U+00E0) falls inside a..é (U+0061..U+00E9)
+	{`[-é]+`, "-é-x"},                   // leading dash literal plus a multi-byte member
+	{`[é-]+`, "é--x"},                   // trailing dash literal
+	{`[é\d]+`, "é4é2x"},                 // multi-byte member combined with a class escape
+	{`[é\p{L}]+`, "éZ9"},                // multi-byte member combined with a property
+	{`[中文]+`, "中文字"},                   // CJK members (3-byte code points)
+	{`(\p{Lu})([a-zé]+)`, "Hé"},         // capture interplay with a mixed class
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

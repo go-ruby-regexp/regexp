@@ -48,9 +48,11 @@ type ClassRange struct {
 }
 
 // RuneClassRange is a single inclusive code-point range inside a character
-// class. It is produced only when the class is rune-aware (case-insensitive /i),
-// where a member may be a multi-byte code point (e.g. (?i)[é] or (?i)[α-ω]) whose
-// bounds do not fit in a byte. A single code point c is the range c..c.
+// class. It is produced when a class member is a multi-byte code point whose
+// bounds do not fit in a byte: a literal multi-byte member or range in UTF8 mode
+// (e.g. [é] or [à-ï]), a folded class's non-ASCII member under /i (e.g. (?i)[é]
+// or (?i)[α-ω]), or \R's multi-byte linebreak set. A single code point c is the
+// range c..c.
 type RuneClassRange struct {
 	Lo, Hi rune
 }
