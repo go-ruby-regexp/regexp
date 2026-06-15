@@ -152,9 +152,41 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   a comment; any whitespace around the comment makes Onigmo accept it too, so the
   divergence is confined to that one shape.
 
-  Still to come in Phase 3: Unicode `\p{…}` property classes (which need
-  rune-level matching, a larger change to the currently byte-oriented VM),
-  Unicode case-folding, and multi-encoding support.
+  **Unicode property classes (`\p{…}`)** ✅ *done (a deliberate slice)* — the
+  `\p{name}`, `\P{name}` and in-brace `\p{^name}` forms are supported as the
+  engine's first **rune-aware** atom. A new `internal/charset` package classifies
+  one code point with Go's `unicode` package (pure Go, no cgo). The supported
+  names are the general categories `L N P S Z C`, the letter/number
+  subcategories `Lu Ll Lt Lm Lo Nd`, and the Onigmo POSIX-style aliases `Alpha`,
+  `Alnum`, `Digit`, `Space`, `Upper`, `Lower`, `Word` — the aliases follow
+  Ruby's definitions, so `Space` is the Unicode `White_Space` property (broader
+  than the `Z` category: it includes the vertical tab) and `Word` is
+  letter | mark | decimal-number | connector-punctuation (so `_` and combining
+  marks are in). Onigmo's one-letter `\pL` form is *not* accepted, matching
+  Onigmo (which warns and rejects it). A `\p{…}` may also be a member of a
+  character class (`[\p{L}\d]`), which makes that whole class rune-aware.
+
+  **The rune/byte boundary.** Only `\p{…}` (and a character class that contains
+  one) is rune-aware: the VM op `OpUniProp` decodes one UTF-8 code point at the
+  cursor and advances by its byte length, and a rune-aware class tests a decoded
+  code point against both its members and its byte ranges (whose bounds, produced
+  only from byte syntax, are all ASCII and so are interpreted as code-point
+  ranges). **Everything else stays byte-oriented and byte-exact** — literals, the
+  dot, byte character classes, anchors, quantifiers, groups, lookaround, `/i`,
+  `(?m)`/`(?x)`, backreferences, and the ReDoS memo. To keep this boundary sound,
+  a rune-aware atom **refuses to match at a UTF-8 continuation byte**, so the
+  byte-by-byte scan and backtracking never test a code point mid-character — the
+  same effect MRI gets by positioning only at character boundaries. That is what
+  makes a negated property such as `\P{L}` skip past a multi-byte letter rather
+  than match one of its interior bytes. A variable-byte-width rune atom (a
+  standalone `\p{…}` or a rune-aware class) is rejected inside a fixed-width
+  lookbehind. Match **offsets remain byte offsets**, whereas MRI reports
+  *character* offsets; the two therefore agree on the matched text but not on the
+  numeric span on multi-byte input, so the differential tests compare matched
+  substrings for the UTF-8 corpus and exact spans for the ASCII corpus.
+
+  Still to come in Phase 3: Unicode case-folding (rune-level `/i`) and
+  multi-encoding support.
 - **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,
   literal prefixes), benchmarks.
 

@@ -19,7 +19,10 @@
 // literals, character classes, and backreferences), m (dot-all: the dot also
 // matches a newline), and x (extended/free-spacing: unescaped whitespace and #
 // comments in the pattern are ignored, except inside a character class). Any
-// other flag letter is reported as a syntax error.
+// other flag letter is reported as a syntax error. Phase 3 also adds the
+// Unicode property escapes \p{name} / \P{name} (with the in-brace negation
+// \p{^name}), both as a standalone atom and as a character-class member; the
+// recognised names are validated by the sibling charset package.
 //
 // Lookbehind, as in Onigmo/Ruby, requires each alternative of its body to have
 // a constant byte width (different alternatives may differ, e.g. (?<=ab|c));

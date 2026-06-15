@@ -29,14 +29,25 @@ It is the regexp backend for
 > `i` ASCII case-insensitive matching (folding ASCII letters in literals, classes
 > and backreferences), `m` dot-all (the dot also matches a newline), and `x`
 > extended/free-spacing (unescaped whitespace and `#` comments ignored, except in
-> a class) — all differential-tested against MRI, 100% coverage, CI green across
-> 6 arches. Variable-width lookbehind is rejected, as in Onigmo/Ruby.
+> a class) — and **Unicode property classes `\p{…}` / `\P{…}`** (general
+> categories `L N P S Z C` + `Lu Ll Lt Lm Lo Nd`, plus the Onigmo aliases
+> `Alpha Alnum Digit Space Upper Lower Word`, with `\p{^…}` negation and
+> embedding inside character classes) — all differential-tested against MRI,
+> 100% coverage, CI green across 6 arches. Variable-width lookbehind is rejected,
+> as in Onigmo/Ruby.
 > **ReDoS memoization (Phase 4)** is in: a backreference-free pattern memoizes
 > its `(instruction, position)` split states, so catastrophic patterns like
 > `(a+)+$` run in polynomial rather than exponential time (with the step budget
-> as the backstop), producing the identical leftmost-first match. Subexpression
-> calls `\g<…>`, Unicode `\p{}` and Unicode case-folding are next. See
-> **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture and roadmap.
+> as the backstop), producing the identical leftmost-first match.
+>
+> **Rune/byte boundary.** `\p{…}` is the only **rune-aware** atom: it decodes one
+> UTF-8 code point and advances by its byte length (a `\p{…}` member also makes
+> its enclosing character class rune-aware). Everything else is **byte-oriented**
+> and byte-exact, and match offsets are **byte** offsets (MRI reports character
+> offsets, so the engines agree on matched text but not on the numeric span on
+> multi-byte input). Subexpression calls `\g<…>` and Unicode case-folding are
+> next. See **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture
+> and roadmap.
 
 ## Why not the standard library?
 

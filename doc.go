@@ -25,8 +25,23 @@
 // classes, and backreferences), m (dot-all: the dot also matches a newline), and
 // x (extended/free-spacing: unescaped whitespace and # comments in the pattern
 // are ignored, except inside a character class). Folding is byte-oriented and
-// ASCII-only; Unicode property classes and Unicode case-folding arrive with the
-// later rune-level work.
+// ASCII-only.
+//
+// Phase 3 also adds Unicode property classes \p{name} / \P{name} (and the
+// in-brace negation \p{^name}), the one rune-aware atom in the otherwise
+// byte-oriented engine: it decodes a single UTF-8 code point and advances by
+// its byte length. The supported names are the general categories L, N, P, S,
+// Z, C and the letter/number subcategories Lu, Ll, Lt, Lm, Lo, Nd, plus the
+// Onigmo POSIX-style aliases Alpha, Alnum, Digit, Space, Upper, Lower and Word
+// (following Ruby's definitions). A property may also appear inside a character
+// class ([\p{L}\d]), which makes that class rune-aware while its ASCII
+// byte-range members keep working. Every other construct stays byte-oriented
+// and byte-exact; a rune-aware atom never matches at a UTF-8 continuation byte,
+// so the scan never tests a code point mid-character (as MRI, which positions by
+// character). Note that match offsets remain byte offsets, whereas MRI reports
+// character offsets, so the two agree on matched text but not on the numeric
+// span on multi-byte input. Unicode case-folding arrives with later rune-level
+// work.
 //
 // ReDoS hardening (Phase 4) is in: for a pattern without a backreference the VM
 // memoizes the (instruction, position) split states it has explored and never
