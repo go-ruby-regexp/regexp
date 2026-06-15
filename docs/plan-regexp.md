@@ -266,6 +266,21 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   numeric span on multi-byte input, so the differential tests compare matched
   substrings for the UTF-8 corpus and exact spans for the ASCII corpus.
 
+  **Hex-digit classes `\h`/`\H` and the linebreak escape `\R`** ✅ *done* —
+  `\h` is Onigmo's hex-digit class `[0-9A-Fa-f]` and `\H` its byte-complement,
+  available both as a standalone escape and as a character-class member (`[\h]`,
+  `[^\h]`), staying byte-oriented like `\d`/`\w`. `\R` matches a single
+  linebreak: it is lowered to `(?>\r\n|[\n\v\f\r\x{85}\x{2028}\x{2029}])`, so a CR-LF
+  pair is matched **atomically as one unit** (reusing the atomic-cut barrier, so
+  `/\R\n/` never splits a CRLF) and a lone `\n`, `\r`, `\v`, `\f`, or one of the
+  multi-byte Unicode linebreaks NEL (U+0085), LS (U+2028) or PS (U+2029) also
+  matches. Because that alternative carries multi-byte code-point members, `\R`
+  is **rune-aware and variable-width**, so — like a `\p{…}` atom — it decodes a
+  whole code point, keeps byte offsets, and is rejected inside a fixed-width
+  lookbehind, exactly as Onigmo does. (The rune-aware class machinery was
+  generalised for this: a class is rune-aware when it carries a `\p{…}` member,
+  an explicit code-point range, *or* is folded under `/i`.)
+
   Still to come in Phase 3: multi-encoding support (the rune-level `/i`
   case-folding above is now done for literals and classes).
 - **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,

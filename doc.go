@@ -59,6 +59,15 @@
 // span on multi-byte input. (Rune-level Unicode case-folding for /i is described
 // above.)
 //
+// Phase 3 also adds the hex-digit class \h (Onigmo's [0-9A-Fa-f]) and its
+// byte-complement \H — usable standalone or inside a character class, and
+// byte-oriented like \d/\w — and the linebreak escape \R, lowered to
+// (?>\r\n|[\n\v\f\r\x{85}\x{2028}\x{2029}]): a CR-LF pair matches atomically as
+// one unit (so \R\n never splits a CRLF) and a lone \n, \r, \v, \f, NEL, LS or
+// PS also matches. \R is rune-aware (it carries the multi-byte NEL/LS/PS
+// members), so like \p{…} it decodes a whole code point and is rejected inside a
+// fixed-width lookbehind.
+//
 // Subexpression calls \g<…> are implemented: \g<name>, \g<n> (absolute group
 // number), the relative forms \g<+n> / \g<-n>, and \g<0> (recurse the whole
 // pattern). A call is a true re-execution of the referenced group's sub-pattern

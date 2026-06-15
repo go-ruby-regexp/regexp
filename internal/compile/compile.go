@@ -22,9 +22,9 @@ const (
 	// '\n' (Ruby's /m option makes the dot match a newline too).
 	OpAny
 	// OpClass matches a byte in (or, if Negate, not in) Ranges and advances. When
-	// Props is non-empty the class is rune-aware: it decodes one UTF-8 code point
-	// and tests it against both Ranges and Props before Negate is applied,
-	// advancing by the code point's byte length.
+	// Props or RuneRanges is non-empty, or Fold is set, the class is rune-aware: it
+	// decodes one UTF-8 code point and tests it against Ranges, RuneRanges and Props
+	// before Negate is applied, advancing by the code point's byte length.
 	OpClass
 	// OpUniProp matches one UTF-8 code point that is a member of (or, if Negate,
 	// not a member of) the Unicode property Prop, advancing by its byte length.

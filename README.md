@@ -37,7 +37,10 @@ It is the regexp backend for
 > **Unicode property classes `\p{…}` / `\P{…}`** (general
 > categories `L N P S Z C` + `Lu Ll Lt Lm Lo Nd`, plus the Onigmo aliases
 > `Alpha Alnum Digit Space Upper Lower Word`, with `\p{^…}` negation and
-> embedding inside character classes) — all differential-tested against MRI,
+> embedding inside character classes), the **hex-digit classes `\h` / `\H`**
+> (`[0-9A-Fa-f]` and its complement), and the **linebreak escape `\R`** (a CRLF
+> matched atomically, or any one of `\n \r \v \f` and the Unicode NEL/LS/PS) —
+> all differential-tested against MRI,
 > 100% coverage, CI green across 6 arches. Variable-width lookbehind is rejected,
 > as in Onigmo/Ruby.
 > **ReDoS memoization (Phase 4)** is in: a backreference-free pattern memoizes

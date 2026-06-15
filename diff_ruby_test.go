@@ -301,6 +301,30 @@ var diffCorpus = []rubyCase{
 	{`(?>)a`, "a"},                  // empty atomic group is a no-op
 	{`(?=(\d)\g<1>)\d+`, "12x"},     // atomic-cut machinery alongside a \g<…> call
 	{`x(?>a*)+y`, "xaaay"},          // possessive-style nesting still terminates
+
+	// Hex-digit classes \h \H and the linebreak escape \R (this increment). \h is
+	// [0-9A-Fa-f], \H its complement; \R matches a CRLF pair atomically or any one
+	// linebreak. These are stable Onigmo features, so the exact-span oracle applies
+	// (the ASCII linebreaks here keep byte and character offsets equal; the
+	// multi-byte NEL/LS/PS forms are pinned by oracle-independent unit tests).
+	{`\h`, "g9z"},                   // first hex digit
+	{`\h+`, "9aFg"},                 // run of hex digits
+	{`\H`, "9z"},                    // first non-hex
+	{`\H+`, "  9ab"},                // run of non-hex
+	{`[\h]+x`, "9aFx"},              // \h inside a class
+	{`[\H]+9`, "zz9"},               // \H inside a class
+	{`[\h\s]+`, "9a \tF"},           // \h combined with another class in a set
+	{`0x\h+`, "0xC0FFEEz"},          // a realistic hex literal
+	{`\R`, "\r\n"},                  // CRLF matched as one unit
+	{`\R`, "\n"},                    // bare LF
+	{`\R`, "\r"},                    // bare CR
+	{`\R`, "\v"},                    // vertical tab
+	{`\R`, "\f"},                    // form feed
+	{`\R+`, "\r\n\n\r"},             // a run of linebreaks (CRLF stays atomic)
+	{`\R\n`, "\r\n"},                // atomic: the CRLF is not split, so this fails
+	{`a\Rb`, "a\r\nb"},              // \R between literals
+	{`\Rx`, "\r\nx"},                // \R eats the CRLF, then x matches
+	{`(?>\h+)x`, "9aFx"},            // \h under an atomic group
 }
 
 // diffUnicodeCorpus exercises \p{…} on genuinely multi-byte UTF-8 input. MRI
@@ -326,6 +350,15 @@ var diffUnicodeCorpus = []rubyCase{
 	{`[\p{L}\d]+`, "héllo3!"},
 	{`[^\p{L}]+`, "héllo123x"},
 	{`(\p{Lu})(\p{Ll}+)`, "Héllo"},
+
+	// \R also matches the multi-byte Unicode linebreaks NEL (U+0085), LS (U+2028)
+	// and PS (U+2029); these are compared by substring since the bytes span more
+	// than one character. \R is rune-aware, so it steps over a whole code point.
+	{`\R`, "x"},
+	{`\R`, " x"},
+	{`\R`, " x"},
+	{`a\Rb`, "a b"},
+	{`\R+`, "\r\n  "},
 
 	// Rune-level case folding under (?i): a multi-byte letter literal folds to its
 	// Unicode case partner via simple (1:1) case folding. Only literal folds are

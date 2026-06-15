@@ -762,10 +762,11 @@ func fixedWidth(n ast.Node) bool {
 		// width is not a compile-time constant.
 		return false
 	case *ast.Class:
-		// A rune-aware class — one carrying a \p{…} member or folded under /i —
-		// matches a code point of variable byte width; a byte-oriented class is one
-		// byte.
-		return len(t.Props) == 0 && !t.Fold
+		// A rune-aware class — one carrying a \p{…} member, an explicit code-point
+		// range (the multi-byte members of a folded class or of \R's linebreak set),
+		// or folded under /i — matches a code point of variable byte width; a
+		// byte-oriented class is one byte.
+		return len(t.Props) == 0 && len(t.RuneRanges) == 0 && !t.Fold
 	}
 	// Literal, AnyChar, byte Class, Anchor, Look, Empty, and containers whose
 	// parts all checked out are constant-width.
@@ -848,8 +849,10 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Anchor{Kind: ast.AnchorEndTextOptNL}, nil
 	case 'G':
 		return &ast.Anchor{Kind: ast.AnchorPrevMatch}, nil
-	case 'd', 'D', 'w', 'W', 's', 'S':
+	case 'd', 'D', 'w', 'W', 's', 'S', 'h', 'H':
 		return perlClass(b), nil
+	case 'R':
+		return linebreak(), nil
 	case 'p', 'P':
 		name, negate, err := p.parseProp(b == 'P')
 		if err != nil {
@@ -1045,8 +1048,9 @@ func validGroupName(s string) bool {
 	return s != ""
 }
 
-// perlClass builds the Class node for one of the Perl class escapes \d \D \w \W
-// \s \S.
+// perlClass builds the Class node for one of the Perl/Onigmo class escapes
+// \d \D \w \W \s \S \h \H. \h is the hex-digit class [0-9A-Fa-f] (and \H its
+// byte-complement), an Onigmo extension; the rest are the standard byte classes.
 func perlClass(b byte) *ast.Class {
 	switch b {
 	case 'd':
@@ -1059,9 +1063,37 @@ func perlClass(b byte) *ast.Class {
 		return &ast.Class{Ranges: wordRanges(), Negate: true}
 	case 's':
 		return &ast.Class{Ranges: spaceRanges()}
-	default: // 'S'
+	case 'S':
 		return &ast.Class{Ranges: spaceRanges(), Negate: true}
+	case 'h':
+		return &ast.Class{Ranges: hexRanges()}
+	default: // 'H'
+		return &ast.Class{Ranges: hexRanges(), Negate: true}
 	}
+}
+
+// linebreak lowers the \R linebreak escape to its Onigmo definition: an atomic
+// match of the CR-LF pair as one unit, else any single linebreak code point —
+// LF, VT, FF, CR, NEL (U+0085), LS (U+2028), or PS (U+2029). It is exactly
+// (?>\r\n|[\n\v\f\r\x85\x{2028}\x{2029}]). The atomic wrapper makes \r\n
+// indivisible (so /\R\n/ never splits a CRLF), reusing the atomic-cut barrier;
+// the trailing alternative is a rune-aware class (it carries multi-byte
+// code-point members), which makes \R variable-width and therefore — like any
+// rune atom — rejected inside a fixed-width lookbehind, as Onigmo requires.
+func linebreak() ast.Node {
+	crlf := &ast.Concat{Subs: []ast.Node{&ast.Literal{B: '\r'}, &ast.Literal{B: '\n'}}}
+	single := &ast.Class{
+		Ranges: []ast.ClassRange{
+			{Lo: '\n', Hi: '\n'}, // LF
+			{Lo: '\v', Hi: '\f'}, // VT, FF
+			{Lo: '\r', Hi: '\r'}, // CR
+		},
+		RuneRanges: []ast.RuneClassRange{
+			{Lo: 0x85, Hi: 0x85},     // NEL
+			{Lo: 0x2028, Hi: 0x2029}, // LS, PS
+		},
+	}
+	return &ast.Atomic{Sub: &ast.Alternate{Subs: []ast.Node{crlf, single}}}
 }
 
 func digitRanges() []ast.ClassRange {
@@ -1074,6 +1106,10 @@ func wordRanges() []ast.ClassRange {
 
 func spaceRanges() []ast.ClassRange {
 	return []ast.ClassRange{{Lo: '\t', Hi: '\n'}, {Lo: '\v', Hi: '\f'}, {Lo: '\r', Hi: '\r'}, {Lo: ' ', Hi: ' '}}
+}
+
+func hexRanges() []ast.ClassRange {
+	return []ast.ClassRange{{Lo: '0', Hi: '9'}, {Lo: 'A', Hi: 'F'}, {Lo: 'a', Hi: 'f'}}
 }
 
 // parseClass parses a bracketed character class [...].
@@ -1239,6 +1275,10 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 		return 0, negateRanges(wordRanges()), nil, nil
 	case 'S':
 		return 0, negateRanges(spaceRanges()), nil, nil
+	case 'h':
+		return 0, hexRanges(), nil, nil
+	case 'H':
+		return 0, negateRanges(hexRanges()), nil, nil
 	case 'p', 'P':
 		name, negate, err := p.parseProp(e == 'P')
 		if err != nil {

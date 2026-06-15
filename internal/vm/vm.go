@@ -693,7 +693,7 @@ func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 	if sp >= len(m.input) {
 		return false, 0
 	}
-	if len(in.Props) == 0 && !in.Fold {
+	if len(in.Props) == 0 && len(in.RuneRanges) == 0 && !in.Fold {
 		if classMatch(in, m.input[sp]) {
 			return true, 1
 		}
@@ -740,11 +740,11 @@ func classMatch(in compile.Inst, b byte) bool {
 }
 
 // classMatchRune reports whether code point r is accepted by a rune-aware
-// OpClass instruction — one carrying a \p{…} member or folded under /i. r is in
-// the positive set if it falls in any byte range (whose bounds, from byte syntax,
-// are all ASCII), any code-point range (the multi-byte members of a folded
-// class), or satisfies any property member; the class's own Negate is applied
-// last. When the class is folded, range membership uses simple case folding, so
+// OpClass instruction — one carrying a \p{…} member, an explicit code-point
+// range, or folded under /i. r is in the positive set if it falls in any byte
+// range (whose bounds, from byte syntax, are all ASCII), any code-point range
+// (the multi-byte members of a folded class or of \R's linebreak set), or
+// satisfies any property member; the class's own Negate is applied last. When the class is folded, range membership uses simple case folding, so
 // the input code point matches when it, or any rune in its simple-case-folding
 // orbit, lies in the range — making (?i)[a-z] accept the Kelvin sign and
 // (?i)[α-ω] accept an uppercase Greek letter.
@@ -775,10 +775,16 @@ func rangeRuneMatch(in compile.Inst, r rune) bool {
 			return true
 		}
 	}
-	// RuneRanges are produced only for a folded class (parseFoldRuneMember runs
-	// only under /i), so membership is always tested with simple case folding.
+	// RuneRanges hold multi-byte code-point members: either a folded class's
+	// non-ASCII members (parseFoldRuneMember, under /i) or \R's linebreak set
+	// (NEL/LS/PS), which is not folded. Membership uses simple case folding only
+	// when the class is folded; otherwise it is a plain inclusive containment.
 	for _, rg := range in.RuneRanges {
-		if charset.FoldRangeContains(r, rg.Lo, rg.Hi) {
+		if in.Fold {
+			if charset.FoldRangeContains(r, rg.Lo, rg.Hi) {
+				return true
+			}
+		} else if r >= rg.Lo && r <= rg.Hi {
 			return true
 		}
 	}
