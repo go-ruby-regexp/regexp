@@ -107,8 +107,23 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   `Match` call that is offset 0 (so it behaves like `\A`). Iterative scanning
   (`scan`/`gsub`), which will advance the `\G` anchor on each step, arrives with
   the replacement/scan API in a later phase.
-- **Phase 3** — Unicode properties `\p{…}`, POSIX classes, case-folding,
-  multi-encoding.
+- **Phase 3** *(in progress)* — POSIX bracket classes, Unicode properties
+  `\p{…}`, case-folding, multi-encoding.
+
+  **POSIX bracket classes** ✅ *done* — inside a character class, `[[:name:]]`
+  (and the negated `[[:^name:]]`) expand to the byte ranges Onigmo uses for the
+  ASCII byte space. The 14 standard classes are supported: `alpha`, `digit`,
+  `alnum`, `upper`, `lower`, `space`, `blank`, `cntrl`, `graph`, `print`,
+  `punct`, `xdigit`, and `word`. A `[` inside a class that is not followed by
+  `:` is a literal `[`; an unknown class name, or a `[:` that is not closed by
+  `:]`, is a parse error (matching Ruby). Negation complements the positive set
+  over the full `0..255` byte range, so e.g. `[[:^alpha:]]` matches any
+  non-ASCII-letter byte — the byte-oriented behaviour MRI exhibits on
+  ASCII-8BIT strings.
+
+  Still to come in Phase 3: Unicode `\p{…}` property classes (which need
+  rune-level matching, a larger change to the currently byte-oriented VM),
+  case-folding (`/i`), and multi-encoding support.
 - **Phase 4** — ReDoS hardening (memoization + timeout/budget), optimizer
   (first-byte sets, literal prefixes), benchmarks.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby

@@ -16,7 +16,10 @@
 // lookaround assertions — positive and negative lookahead (?=...) (?!...) and
 // lookbehind (?<=...) (?<!...) — and the \G anchor (which pins a match to the
 // scan start). Lookbehind bodies must be of constant width per alternative, as
-// in Onigmo/Ruby; variable-width lookbehind is rejected. Unicode properties and
+// in Onigmo/Ruby; variable-width lookbehind is rejected. Phase 3 begins with
+// POSIX bracket classes [[:name:]] (and negated [[:^name:]]) inside character
+// classes, for the 14 standard names alpha, digit, alnum, upper, lower, space,
+// blank, cntrl, graph, print, punct, xdigit, and word. Unicode properties and
 // case-folding arrive in later phases; see docs/plan-regexp.md for the full
 // roadmap.
 package onigmo
