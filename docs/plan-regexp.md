@@ -121,9 +121,23 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   non-ASCII-letter byte — the byte-oriented behaviour MRI exhibits on
   ASCII-8BIT strings.
 
+  **Case-folding (`/i`)** ✅ *done (ASCII)* — ASCII case-insensitive matching
+  via the inline options `(?i)` (a set directive that applies to the rest of the
+  enclosing group), `(?i:…)` (a scoped non-capturing group), and `(?-i)` /
+  `(?i-i:…)` (turning folding back off). Under folding, an `OpChar` for an ASCII
+  letter also matches the opposite-case byte, an `OpClass` tests membership for
+  both an input byte and its ASCII-case counterpart before applying negation (so
+  `(?i)[^a-z]` excludes `A`), and a backreference compares case-insensitively.
+  Scoping follows Onigmo/Ruby exactly, including the subtle rule that a `(?i)`
+  forming the *leading prefix* of an alternation branch propagates to later
+  branches (`(?i)a|b` folds `b`) whereas one set after a consuming atom does not
+  (`a(?i)|b` does not). Folding is byte-oriented and ASCII-only: Unicode
+  case-folding is part of the later rune-level work. Inline flags other than `i`
+  (e.g. `m`, `x`) are not yet recognised and are reported as syntax errors.
+
   Still to come in Phase 3: Unicode `\p{…}` property classes (which need
   rune-level matching, a larger change to the currently byte-oriented VM),
-  case-folding (`/i`), and multi-encoding support.
+  Unicode case-folding, and multi-encoding support.
 - **Phase 4** — ReDoS hardening (memoization + timeout/budget), optimizer
   (first-byte sets, literal prefixes), benchmarks.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby

@@ -23,11 +23,14 @@ It is the regexp backend for
 > non-capturing groups, alternation, named groups `(?<name>…)` and
 > backreferences `\1` / `\k<name>`, plus **lookahead `(?=…)` / `(?!…)`,
 > fixed-width lookbehind `(?<=…)` / `(?<!…)`, and the `\G` anchor**, and the
-> first of Phase 3: **POSIX bracket classes `[[:alpha:]]` … `[[:^digit:]]`**
-> (the 14 standard classes, positive and negated) inside character classes —
-> differential-tested against MRI, 100% coverage, CI green across 6 arches.
-> Variable-width lookbehind is rejected, as in Onigmo/Ruby. Subexpression calls
-> `\g<…>`, Unicode `\p{}`, case-folding and ReDoS memoization are next. See
+> and from Phase 3: **POSIX bracket classes `[[:alpha:]]` … `[[:^digit:]]`**
+> (the 14 standard classes, positive and negated) inside character classes, and
+> **ASCII case-insensitive matching via the inline `(?i)` / `(?i:…)` options**
+> (with `(?-i)` to turn it off) — folding ASCII letters in literals, classes and
+> backreferences — differential-tested against MRI, 100% coverage, CI green
+> across 6 arches. Variable-width lookbehind is rejected, as in Onigmo/Ruby.
+> Subexpression calls `\g<…>`, Unicode `\p{}` and Unicode case-folding, and
+> ReDoS memoization are next. See
 > **[docs/plan-regexp.md](docs/plan-regexp.md)** for the architecture and roadmap.
 
 ## Why not the standard library?
