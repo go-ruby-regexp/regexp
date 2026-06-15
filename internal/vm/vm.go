@@ -33,10 +33,23 @@ type machine struct {
 	budget int
 	gpos   int // scan start of the current attempt, for \G
 	stack  []thread
-	// visited guards against empty-width loops: it records the (pc, sp) pairs
-	// reached without consuming input since the last advance, so an
-	// empty-matching body under * cannot spin forever.
+	// visited records (pc, sp) pairs seen at OpSplit decision points.
+	//
+	// It serves two related purposes. It always guards against empty-width
+	// loops: an empty-matching body under * that returns to the same split at the
+	// same position is cut off rather than spun forever. When memoize is set (the
+	// program has no backreference), it additionally persists across consumed
+	// input and so becomes full ReDoS memoization: a split state reached a second
+	// time — by any backtracking path — has an identical future, so its X branch
+	// is not re-explored. That collapses catastrophic backtracking (e.g.
+	// (a*)*b, (a|aa)*c) from exponential to polynomial. When memoize is false a
+	// backreference can read captured text, so the future is not a pure function
+	// of (pc, sp); the set is then cleared on every consumed byte and only its
+	// empty-loop role remains.
 	visited map[int64]bool
+	// memoize enables the persistent (pc, sp) memo. It is the program's
+	// no-backreference property, hoisted here for the hot loop.
+	memoize bool
 }
 
 // Match runs prog against input, scanning start positions left to right until a
@@ -48,6 +61,7 @@ func Match(prog *compile.Program, input string, budget int) ([]int, bool, error)
 		input:   input,
 		budget:  budget,
 		visited: make(map[int64]bool),
+		memoize: !prog.HasBackref,
 	}
 	// \G anchors to where the overall search began. For a single Match call that
 	// is position 0; iterative scanning (gsub/scan) advances it on each step,
@@ -73,6 +87,10 @@ func Match(prog *compile.Program, input string, budget int) ([]int, bool, error)
 // final capture slots.
 func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 	m.stack = m.stack[:0]
+	// A fresh search starts from an empty memo. Each start position is an
+	// independent attempt; a (pc, sp) that failed from an earlier start could in
+	// principle be re-reached, but the memo is reset per start to keep its meaning
+	// simple (failure of this whole attempt) and bounded.
 	clear(m.visited)
 	pc := 0
 	sp := start
@@ -88,21 +106,21 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 			if sp < len(m.input) && charMatch(in, m.input[sp]) {
 				pc++
 				sp++
-				clear(m.visited)
+				m.consumed()
 				continue
 			}
 		case compile.OpAny:
 			if sp < len(m.input) && (in.DotAll || m.input[sp] != '\n') {
 				pc++
 				sp++
-				clear(m.visited)
+				m.consumed()
 				continue
 			}
 		case compile.OpClass:
 			if sp < len(m.input) && classMatch(in, m.input[sp]) {
 				pc++
 				sp++
-				clear(m.visited)
+				m.consumed()
 				continue
 			}
 		case compile.OpSplit:
@@ -182,7 +200,7 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 				pc++
 				sp += len(ref)
 				if len(ref) > 0 {
-					clear(m.visited)
+					m.consumed()
 				}
 				continue
 			}
@@ -361,6 +379,16 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		pc = t.pc
 		sp = t.sp
 		caps = t.caps
+	}
+}
+
+// consumed is called after the main search advances past one or more input
+// bytes. When memoization is off it resets the (pc, sp) set so it only guards
+// empty-width loops since the last advance; when memoization is on the set
+// persists across consumed input (becoming the ReDoS memo) and nothing is reset.
+func (m *machine) consumed() {
+	if !m.memoize {
+		clear(m.visited)
 	}
 }
 

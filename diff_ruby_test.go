@@ -169,6 +169,16 @@ var diffCorpus = []rubyCase{
 	{`(?i)(ab)\1`, "AbAB"},
 	{`(ab)(?i)\1`, "abAB"},
 	{`(?i)(?<g>ab)\k<g>`, "ABab"},
+
+	// ReDoS memoization (Phase 4): patterns whose naive backtracking is
+	// exponential must still produce Ruby-exact spans. The inputs end in a byte
+	// that defeats the final anchor/atom so the engine explores the worst case.
+	{`(a+)+$`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"},
+	{`(a|aa)+$`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"},
+	{`(a*)*$`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"},
+	{`(.*)*$`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"},
+	{`(a+)+b`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	{`(a+)+b`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"},
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

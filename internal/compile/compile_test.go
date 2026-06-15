@@ -182,6 +182,25 @@ func TestCompileAlternateLinks(t *testing.T) {
 	}
 }
 
+func TestCompileHasBackref(t *testing.T) {
+	// HasBackref drives whether the VM may memoize. It is set iff the program
+	// emits an OpBackref (numeric \1 or named \k<>), and clear otherwise.
+	for _, tc := range []struct {
+		pat  string
+		want bool
+	}{
+		{`(a)\1`, true},
+		{`(?<g>a)\k<g>`, true},
+		{`(a)(b)`, false},
+		{`a(?=b)`, false},
+		{`(a*)*b`, false},
+	} {
+		if got := compilePattern(t, tc.pat).HasBackref; got != tc.want {
+			t.Errorf("/%s/ HasBackref = %v want %v", tc.pat, got, tc.want)
+		}
+	}
+}
+
 func TestCompileFoldFlagPropagates(t *testing.T) {
 	// (?i) must set Fold on the emitted OpChar, OpClass, and OpBackref.
 	p := compilePattern(t, `(?i)(a)[b]\1`)

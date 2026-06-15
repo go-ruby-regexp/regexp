@@ -67,10 +67,18 @@ type Inst struct {
 
 // Program is a compiled regular expression: the instruction list, the number of
 // capture groups (group 0 being the whole match), and the named-group map.
+//
+// HasBackref records whether any instruction reads a capture (OpBackref). The VM
+// uses it to decide whether (instruction, position) memoization is sound: with no
+// backreference, captures are write-only and never influence whether a match can
+// succeed, so two arrivals at the same (pc, sp) have identical futures and the
+// later one can be pruned. A backreference makes the future depend on captured
+// text, so memoization is disabled for such programs.
 type Program struct {
 	Insts      []Inst
 	NumCapture int
 	Names      map[string]int
+	HasBackref bool
 }
 
 // NumSlots returns the number of save slots the VM must allocate (two per
@@ -98,7 +106,14 @@ func Compile(r syntax.Result) *Program {
 	b.node(r.Root)
 	b.emit(Inst{Op: OpSave, Slot: 1})
 	b.emit(Inst{Op: OpMatch})
-	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names}
+	hasBackref := false
+	for i := range b.insts {
+		if b.insts[i].Op == OpBackref {
+			hasBackref = true
+			break
+		}
+	}
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref}
 }
 
 // node compiles one AST node, appending its instructions.
