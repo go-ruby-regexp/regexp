@@ -103,8 +103,9 @@
 // every offset). A second pass extracts a required interior literal — a fixed
 // substring that must appear somewhere in every match even when the pattern has
 // no anchor or leading literal (the foo of \d+foo\d+) — by walking the program's
-// mandatory spine, and rejects a whole haystack lacking it with a single
-// strings.Contains. Every candidate either pass yields is still verified by the
-// VM, so results are byte-identical to an unfiltered scan. See docs/plan-regexp.md
-// for the full roadmap.
+// mandatory spine, rejects a whole haystack lacking it with a single
+// strings.Contains, and bounds the scan on the right at the literal's last
+// occurrence (no match can begin past it). Every candidate either pass yields is
+// still verified by the VM, so results are byte-identical to an unfiltered scan.
+// See docs/plan-regexp.md for the full roadmap.
 package onigmo

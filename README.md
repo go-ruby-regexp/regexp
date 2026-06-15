@@ -63,9 +63,10 @@ It is the regexp backend for
 > `[ab]*xyz[cd]*`) by walking the program's mandatory spine across quantifiers,
 > captured groups, and lookarounds but never across an alternation. A single
 > `strings.Contains` then rejects a whole haystack lacking it before the VM runs
-> at any offset; it stays transparent (the VM still verifies every survivor) and
-> gives **~158×** on a 90 KB non-matching haystack the start-locating filters
-> cannot exploit.
+> at any offset, and the literal's last occurrence bounds the scan on the right
+> (no match can begin past it). It stays transparent (the VM still verifies every
+> survivor) and gives **~108×** on a 90 KB non-matching haystack the start-locating
+> filters cannot exploit.
 >
 > **Wall-clock timeout (Phase 4)** is in: `re.WithTimeout(d)` returns a copy that
 > aborts any single match exceeding `d` of real time (Ruby's `Regexp.timeout`

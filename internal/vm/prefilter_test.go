@@ -427,6 +427,32 @@ func TestRequiredGateRejectsMissingLiteral(t *testing.T) {
 	}
 }
 
+// TestRequiredScanRightBound verifies the required interior literal also bounds
+// the scan on the right: once a candidate start passes the literal's LAST
+// occurrence, no later start can contain it, so the scan stops instead of running
+// to end-of-input. Transparency is checked against the brute-force oracle; the
+// bound only ever stops early, never changes a result.
+func TestRequiredScanRightBound(t *testing.T) {
+	prog := build(t, `\d+foo\d+`)
+	// "foo" occurs once early; a long non-matching tail follows. A match cannot
+	// begin after the single "foo", so the scan stops there.
+	input := "12foo34 " + strings.Repeat("tail ", 200)
+	gb, ge, gok := matchSpan(t, `\d+foo\d+`, input)
+	bb, be, bok := bruteForce(t, prog, input)
+	if gok != bok || gb != bb || ge != be {
+		t.Fatalf("right-bound result (%d,%d,%v) != brute (%d,%d,%v)", gb, ge, gok, bb, be, bok)
+	}
+	if !gok {
+		t.Fatal("expected a match for the early 12foo34")
+	}
+	// A haystack whose last "foo" is followed only by non-matching text still
+	// reports no match, with the scan stopped at that last "foo".
+	input2 := strings.Repeat("xfoox ", 50) // "foo" present but never with surrounding digits
+	if _, ok, _ := Match(prog, input2, DefaultBudget); ok {
+		t.Fatal("foo without surrounding digits must not match")
+	}
+}
+
 // TestNextStartAnchored covers both anchored outcomes.
 func TestNextStartAnchored(t *testing.T) {
 	pf := prefilter{anchored: true}
@@ -645,6 +671,24 @@ func BenchmarkRequiredInteriorMiss(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, ok, _ := Match(prog, benchHaystack, DefaultBudget); ok {
+			b.Fatal("unexpected match")
+		}
+	}
+}
+
+// BenchmarkRequiredInteriorRightBound exercises the scan's right bound: the
+// required literal "needle" occurs once near the FRONT of a long haystack whose
+// remainder never matches. Without the bound the VM would still be tried at every
+// offset of the long tail; with it the scan stops just past the single occurrence.
+// The pattern's surrounding \d+ is unsatisfied here, so the overall result is no
+// match — isolating the right-bound's pruning of the tail.
+func BenchmarkRequiredInteriorRightBound(b *testing.B) {
+	hay := "needle " + benchHaystack // one early "needle", then a long non-matching tail
+	prog := mustBuild(b, `\d+needle\d+`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, _ := Match(prog, hay, DefaultBudget); ok {
 			b.Fatal("unexpected match")
 		}
 	}

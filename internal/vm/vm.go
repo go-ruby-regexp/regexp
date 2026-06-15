@@ -165,10 +165,30 @@ func MatchTimeout(prog *compile.Program, input string, budget int, deadline time
 	// runs at most once. It is skipped when a leading literal prefix is present:
 	// that prefix's own start-locating search already rejects a haystack lacking
 	// it, so the gate would only repeat work.
-	if pf.required != "" && pf.prefix == "" && !strings.Contains(input, pf.required) {
-		return nil, false, nil
+	//
+	// The same required literal also BOUNDS THE SCAN ON THE RIGHT: a match starting
+	// at offset s spans [s, e) and must contain the literal wholly within it, so the
+	// literal's start index j satisfies j >= s. The largest such j is the literal's
+	// LAST occurrence, so no match can begin past it; the scan stops once start
+	// exceeds that offset instead of grinding to end-of-input. -1 (the cap is
+	// inactive) leaves the scan unbounded.
+	lastViableStart := -1
+	if pf.required != "" && pf.prefix == "" {
+		// A forward strings.Index is the fast absence test (the common
+		// non-matching case): the optimized runtime search rejects a literal-free
+		// haystack in one pass. Only when the literal is present do we pay the
+		// backward LastIndex to compute the right bound.
+		if !strings.Contains(input, pf.required) {
+			return nil, false, nil
+		}
+		lastViableStart = strings.LastIndex(input, pf.required)
 	}
 	for start := 0; start <= len(input); start++ {
+		if lastViableStart >= 0 && start > lastViableStart {
+			// Past the last position from which a match could still contain the
+			// required literal: the scan is exhausted.
+			return nil, false, nil
+		}
 		if usePF {
 			next := pf.nextStart(input, start)
 			if next < 0 {

@@ -344,11 +344,16 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   follows forced steps, any byte it emits must be matched by every run, so the
   literal is a genuine *necessary* (not sufficient) condition. At search time a
   single `strings.Contains` rejects a whole haystack lacking the literal before
-  the VM runs at any offset; when present, the per-position scan and the VM still
-  verify exactly as before, so results stay byte-identical (proven by the
-  brute-force equivalence test and the MRI corpus). On the same 90 KB
-  non-matching haystack a pattern the start-locating filters cannot exploit
-  (`\d+needle\d+`) runs **~158× faster** (24.8 µs vs 3.91 ms, 2 allocs vs 270 k).
+  the VM runs at any offset; the literal also **bounds the scan on the right** —
+  a match starting at `s` must contain the literal at some index `j ≥ s`, so no
+  match can begin past the literal's *last* occurrence and the scan stops there
+  instead of grinding to end-of-input. When present, the per-position scan and the
+  VM still verify exactly as before, so results stay byte-identical (proven by the
+  brute-force equivalence test and the MRI corpus). On a 90 KB non-matching
+  haystack a pattern the start-locating filters cannot exploit (`\d+needle\d+`)
+  runs **~108× faster** (36 µs vs 3.86 ms, 2 allocs vs 270 k); with the literal
+  only near the front, the right bound likewise prunes the long non-matching tail
+  to ~20× (2 allocs vs 270 k) rather than scanning it.
 
   **Wall-clock timeout** ✅ *done* — a real-time deadline (Ruby's
   `Regexp.timeout` / per-pattern `timeout:` equivalent) backs up the
