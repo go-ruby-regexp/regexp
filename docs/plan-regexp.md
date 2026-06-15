@@ -283,8 +283,9 @@ maps Ruby's `Regexp`/`MatchData` onto this.
 
   Still to come in Phase 3: multi-encoding support (the rune-level `/i`
   case-folding above is now done for literals and classes).
-- **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,
-  literal prefixes — ✅ start-position prefilter done), benchmarks.
+- **Phase 4** *(in progress)* — ReDoS hardening (✅ memoization + step budget +
+  wall-clock timeout), optimizer (first-byte sets, literal prefixes — ✅ start
+  -position prefilter done), benchmarks.
 
   **Memoization** ✅ *done* — the backtracking VM memoizes the
   (instruction, input-position) split states it reaches and never re-explores
@@ -319,8 +320,20 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   input — proven by a brute-force-vs-prefilter equivalence test and the unchanged
   MRI differential corpus. On a 90 KB non-matching haystack the literal-prefix
   path is ~200× faster (16.6 µs vs 3.38 ms, 2 allocs vs 270 k) and the first-byte
-  -set path ~30× faster than the VM-at-every-offset baseline. Still to come in
-  Phase 4: a wall-clock timeout, more optimizer passes, and broader benchmarks.
+  -set path ~30× faster than the VM-at-every-offset baseline.
+
+  **Wall-clock timeout** ✅ *done* — a real-time deadline (Ruby's
+  `Regexp.timeout` / per-pattern `timeout:` equivalent) backs up the
+  deterministic step budget: a match still running past the deadline aborts and
+  reports no match. The public surface is `re.WithTimeout(d)`, which returns a
+  *copy* carrying the limit (sharing the compiled program) so a Regexp stays
+  immutable and concurrency-safe, and `re.Timeout()`. Internally the VM polls the
+  monotonic clock only once every 4096 steps (a power-of-two mask makes the gate
+  one AND), so a search with no deadline pays nothing and a deadline-bounded one
+  amortizes the clock read to noise; the same poll runs inside the lookaround
+  sub-VM. A pathological pattern is then bounded by whichever of the budget or the
+  deadline it reaches first. Still to come in Phase 4: more optimizer passes and
+  broader benchmarks; then Phase 3's multi-encoding support.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
   adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
 

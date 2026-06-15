@@ -4,6 +4,7 @@ package vm
 
 import (
 	"errors"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-onigmo/regexp/internal/ast"
@@ -15,10 +16,24 @@ import (
 // budget. It is the deterministic hook later phases use for ReDoS hardening.
 var ErrBudget = errors.New("backtrack step budget exceeded")
 
+// ErrTimeout is returned when a match exceeds the configured wall-clock deadline
+// (Ruby's Regexp.timeout equivalent). It is the real-time backstop that
+// complements the deterministic step budget: a pathological match is aborted by
+// whichever limit it hits first.
+var ErrTimeout = errors.New("regexp match timeout exceeded")
+
 // DefaultBudget is the maximum number of VM steps a single search may take
 // before it aborts. It is intentionally high so well-behaved patterns never hit
 // it.
 const DefaultBudget = 100_000_000
+
+// clockCheckMask gates how often the wall-clock deadline is polled. Reading the
+// monotonic clock on every VM step would dominate the hot loop, so the deadline
+// is checked once every clockCheckMask+1 steps (a power-of-two mask makes the
+// gate a single AND). The interval is small enough that the real overrun past a
+// deadline stays negligible yet large enough that the clock read is amortized to
+// noise.
+const clockCheckMask = 0xfff
 
 // MaxCallDepth bounds the depth of nested subexpression calls (\g<…>) on the VM's
 // call stack. A recursive grammar (e.g. balanced parentheses, \g<0> whole-pattern
@@ -72,8 +87,14 @@ type machine struct {
 	prog   *compile.Program
 	input  string
 	budget int
-	gpos   int // scan start of the current attempt, for \G
-	stack  []thread
+	// deadline is the wall-clock instant past which the search aborts with
+	// ErrTimeout. A zero deadline (deadline.IsZero()) means no time limit, so the
+	// clock is never read and there is no per-step cost. clockTick counts steps so
+	// the clock is polled only once every clockCheckMask+1 steps.
+	deadline  time.Time
+	clockTick uint64
+	gpos      int // scan start of the current attempt, for \G
+	stack     []thread
 	// visited records (pc, sp) pairs seen at OpSplit decision points.
 	//
 	// It serves two related purposes. It always guards against empty-width
@@ -95,13 +116,25 @@ type machine struct {
 
 // Match runs prog against input, scanning start positions left to right until a
 // match is found. It returns the capture slots (len == prog.NumSlots), whether
-// a match was found, and an error only when the step budget is exhausted.
+// a match was found, and an error only when the step budget is exhausted. It
+// imposes no wall-clock limit; use MatchTimeout for that.
 func Match(prog *compile.Program, input string, budget int) ([]int, bool, error) {
+	return MatchTimeout(prog, input, budget, time.Time{})
+}
+
+// MatchTimeout is Match with an additional wall-clock deadline (Ruby's
+// Regexp.timeout equivalent). When deadline is non-zero the search aborts with
+// ErrTimeout if it is still running past that instant; a pathological match is
+// then bounded by whichever of the step budget or the deadline it reaches first.
+// A zero deadline means no time limit, identical to Match, and incurs no
+// per-step clock cost.
+func MatchTimeout(prog *compile.Program, input string, budget int, deadline time.Time) ([]int, bool, error) {
 	m := &machine{
-		prog:    prog,
-		input:   input,
-		budget:  budget,
-		visited: make(map[int64]bool),
+		prog:     prog,
+		input:    input,
+		budget:   budget,
+		deadline: deadline,
+		visited:  make(map[int64]bool),
 		// The persistent (pc, sp) memo is sound only when the future is a pure
 		// function of (pc, sp). A backreference reads captured text, and a
 		// subexpression call (\g<…>) re-runs/re-captures a group and carries its own
@@ -163,10 +196,9 @@ func (m *machine) run(start int, caps []int) ([]int, bool, error) {
 	var openg []int       // indices of groups currently open (for call save/restore)
 	var atomic []int      // backtrack-stack depths recorded by open atomic groups (?>…)
 	for {
-		if m.budget <= 0 {
-			return nil, false, ErrBudget
+		if err := m.tick(); err != nil {
+			return nil, false, err
 		}
-		m.budget--
 
 		in := m.prog.Insts[pc]
 		switch in.Op {
@@ -394,10 +426,9 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 	visited := make(map[int64]bool)
 	pc := body
 	for {
-		if m.budget <= 0 {
-			return nil, false, ErrBudget
+		if err := m.tick(); err != nil {
+			return nil, false, err
 		}
-		m.budget--
 
 		in := m.prog.Insts[pc]
 		switch in.Op {
@@ -563,6 +594,26 @@ func (m *machine) execLook(body, sp, endAt int, caps []int) ([]int, bool, error)
 		openg = t.openg
 		atomic = t.atomic
 	}
+}
+
+// tick accounts one VM step against both limits and reports the error to abort
+// with, if any. It always decrements the deterministic step budget (ErrBudget on
+// exhaustion). When a wall-clock deadline is set it additionally polls the
+// monotonic clock, but only once every clockCheckMask+1 steps so the clock read
+// is amortized away from the hot path; a zero deadline skips the clock entirely
+// so an unlimited search pays nothing for the timeout machinery.
+func (m *machine) tick() error {
+	if m.budget <= 0 {
+		return ErrBudget
+	}
+	m.budget--
+	if !m.deadline.IsZero() {
+		m.clockTick++
+		if m.clockTick&clockCheckMask == 0 && time.Now().After(m.deadline) {
+			return ErrTimeout
+		}
+	}
+	return nil
 }
 
 // consumed is called after the main search advances past one or more input

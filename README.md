@@ -56,6 +56,13 @@ It is the regexp backend for
 > the VM, so results are byte-identical — and gives ~200× on a literal-prefixed
 > scan of a long non-matching haystack.
 >
+> **Wall-clock timeout (Phase 4)** is in: `re.WithTimeout(d)` returns a copy that
+> aborts any single match exceeding `d` of real time (Ruby's `Regexp.timeout`
+> equivalent), the real-time backstop to the deterministic step budget. The
+> receiver is left unchanged, so a shared `*Regexp` stays concurrency-safe; the VM
+> polls the clock only once every 4096 steps, so a search with no deadline pays
+> nothing.
+>
 > **Rune/byte boundary.** `\p{…}` and a folded (`/i`) literal or class are the
 > **rune-aware** atoms: each decodes one UTF-8 code point and advances by its byte
 > length (a `\p{…}` member, or `/i`, also makes the enclosing character class

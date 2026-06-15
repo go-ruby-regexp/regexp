@@ -3,6 +3,7 @@ package vm
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/go-onigmo/regexp/internal/ast"
 	"github.com/go-onigmo/regexp/internal/compile"
@@ -148,6 +149,56 @@ func TestBudgetExceededOnLaterStart(t *testing.T) {
 	_, ok, err := Match(prog, "aaaa", 2)
 	if !errors.Is(err, ErrBudget) {
 		t.Fatalf("expected ErrBudget across starts, got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestTimeoutExceeded forces the wall-clock deadline branch: an already-expired
+// deadline plus a long-running search (a backreference disables memoization, so
+// a catastrophic pattern runs well past the clock-poll interval) must abort with
+// ErrTimeout rather than ErrBudget — the timeout fires first under a generous
+// budget.
+func TestTimeoutExceeded(t *testing.T) {
+	prog := build(t, `(a+)+\1b`) // backref → memoization off → catastrophic
+	past := time.Now().Add(-time.Hour)
+	_, ok, err := MatchTimeout(prog, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DefaultBudget, past)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("expected ErrTimeout, got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestTimeoutNotExceeded covers the deadline-set-but-not-expired branch: a far
+// -future deadline on a search that runs past the clock-poll interval still
+// completes normally, so the clock is polled (the After test returns false) yet
+// the match succeeds.
+func TestTimeoutNotExceeded(t *testing.T) {
+	// A long literal scan over a non-matching haystack runs many thousands of
+	// steps (well past clockCheckMask), exercising the periodic clock poll, then
+	// matches at the end.
+	hay := ""
+	for i := 0; i < 5000; i++ {
+		hay += "x"
+	}
+	hay += "y"
+	prog := build(t, "xy")
+	future := time.Now().Add(time.Hour)
+	caps, ok, err := MatchTimeout(prog, hay, DefaultBudget, future)
+	if err != nil || !ok {
+		t.Fatalf("expected a match within the deadline, got ok=%v err=%v", ok, err)
+	}
+	if caps[0] != 4999 {
+		t.Fatalf("match start = %d, want 4999", caps[0])
+	}
+}
+
+// TestTimeoutInLookaround drives the deadline check inside the lookaround sub-VM:
+// a lookahead body that runs long under an expired deadline must abort with
+// ErrTimeout from execLook's tick.
+func TestTimeoutInLookaround(t *testing.T) {
+	prog := build(t, `(?=(a+)+\1b)c`) // catastrophic body inside a lookahead
+	past := time.Now().Add(-time.Hour)
+	_, ok, err := MatchTimeout(prog, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DefaultBudget, past)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("expected ErrTimeout from lookaround, got ok=%v err=%v", ok, err)
 	}
 }
 

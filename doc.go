@@ -89,7 +89,11 @@
 // has explored and never re-explores one, so catastrophic patterns such as
 // (a+)+$ run in polynomial rather than exponential time while producing the
 // identical leftmost-first match. A deterministic step budget (and, for calls,
-// the recursion-depth cap) remains as the backstop.
+// the recursion-depth cap) remains as the backstop, joined by an optional
+// wall-clock timeout (Ruby's Regexp.timeout equivalent): re.WithTimeout(d)
+// returns a concurrency-safe copy that aborts a match exceeding d of real time,
+// reporting no match. A pathological pattern is bounded by whichever of the
+// budget or the deadline it reaches first.
 //
 // A transparent start-position prefilter (Phase 4) accelerates the search: the
 // optimizer analyses the compiled program's leading path for a \A anchor, a

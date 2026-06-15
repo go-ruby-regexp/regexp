@@ -3,6 +3,7 @@ package onigmo
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/go-onigmo/regexp/internal/syntax"
 )
@@ -100,6 +101,49 @@ func TestNonParticipatingGroup(t *testing.T) {
 	}
 	if m.Str(2) != "" {
 		t.Errorf("non-participating Str = %q", m.Str(2))
+	}
+}
+
+// TestTimeoutAPI exercises the public wall-clock timeout: WithTimeout sets the
+// limit on a copy without mutating the receiver, Timeout reports it, a positive
+// timeout bounds a catastrophic match (returning no match), and a non-positive
+// timeout clears the limit.
+func TestTimeoutAPI(t *testing.T) {
+	re := mustCompile(t, `(a+)+\1b`) // catastrophic, backref disables memoization
+	if re.Timeout() != 0 {
+		t.Fatalf("fresh Regexp Timeout = %v, want 0", re.Timeout())
+	}
+	input := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// A 1ns timeout aborts the catastrophic search: no match (the deadline trips
+	// before the engine can finish backtracking).
+	timed := re.WithTimeout(time.Nanosecond)
+	if timed.Timeout() != time.Nanosecond {
+		t.Fatalf("WithTimeout Timeout = %v, want 1ns", timed.Timeout())
+	}
+	if m := timed.Match(input); m != nil {
+		t.Fatalf("timed-out catastrophic match returned a result: %q", m.Str(0))
+	}
+	// The receiver is unchanged (immutability / concurrency safety).
+	if re.Timeout() != 0 {
+		t.Fatalf("WithTimeout mutated the receiver: Timeout = %v", re.Timeout())
+	}
+
+	// A non-positive timeout clears the limit; the copy then has no deadline.
+	cleared := timed.WithTimeout(0)
+	if cleared.Timeout() != 0 {
+		t.Fatalf("WithTimeout(0) Timeout = %v, want 0", cleared.Timeout())
+	}
+	neg := timed.WithTimeout(-time.Second)
+	if neg.Timeout() != 0 {
+		t.Fatalf("WithTimeout(negative) Timeout = %v, want 0", neg.Timeout())
+	}
+
+	// With a generous timeout a well-behaved pattern still matches normally (the
+	// deadline path is taken but never trips).
+	ok := mustCompile(t, "abc").WithTimeout(time.Minute)
+	if m := ok.Match("xxabcxx"); m == nil || m.Str(0) != "abc" {
+		t.Fatalf("generous-timeout match failed: %v", m)
 	}
 }
 
