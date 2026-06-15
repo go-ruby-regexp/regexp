@@ -26,5 +26,12 @@
 // x (extended/free-spacing: unescaped whitespace and # comments in the pattern
 // are ignored, except inside a character class). Folding is byte-oriented and
 // ASCII-only; Unicode property classes and Unicode case-folding arrive with the
-// later rune-level work. See docs/plan-regexp.md for the full roadmap.
+// later rune-level work.
+//
+// ReDoS hardening (Phase 4) is in: for a pattern without a backreference the VM
+// memoizes the (instruction, position) split states it has explored and never
+// re-explores one, so catastrophic patterns such as (a+)+$ run in polynomial
+// rather than exponential time while producing the identical leftmost-first
+// match. A deterministic step budget remains as the backstop. See
+// docs/plan-regexp.md for the full roadmap.
 package onigmo

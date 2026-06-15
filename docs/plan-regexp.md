@@ -155,8 +155,24 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   Still to come in Phase 3: Unicode `\p{…}` property classes (which need
   rune-level matching, a larger change to the currently byte-oriented VM),
   Unicode case-folding, and multi-encoding support.
-- **Phase 4** — ReDoS hardening (memoization + timeout/budget), optimizer
-  (first-byte sets, literal prefixes), benchmarks.
+- **Phase 4** *(in progress)* — ReDoS hardening, optimizer (first-byte sets,
+  literal prefixes), benchmarks.
+
+  **Memoization** ✅ *done* — the backtracking VM memoizes the
+  (instruction, input-position) split states it reaches and never re-explores
+  one. This is sound exactly when the program has no backreference: captures are
+  then write-only and never affect whether a match can succeed, so two arrivals
+  at the same `(pc, sp)` split have identical futures and the later one is
+  pruned. The compiler records this as `Program.HasBackref`; for a backref-free
+  program the `(pc, sp)` set persists across consumed input and becomes the
+  memo, collapsing the canonical catastrophic patterns — `(a+)+$`, `(a|aa)+$`,
+  `(.*)*$` — from exponential to polynomial work while producing byte-identical
+  leftmost-first results. A program with a backreference keeps the previous
+  per-advance reset of that set (its only role there is the zero-width-loop
+  guard), and the lookaround sub-VM is unchanged. The deterministic step budget
+  remains as the backstop for the residual cases (notably backref-bearing
+  patterns) that memoization cannot prune. Still to come in Phase 4: a wall-clock
+  timeout, the optimizer, and benchmarks.
 - **Phase 5** — full Ruby `Regexp`/`MatchData` surface via the go-embedded-ruby
   adapter; replacement DSL (`\1`, `\k<>`, `\&`, blocks).
 
