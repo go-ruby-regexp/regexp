@@ -49,28 +49,34 @@ Packages:
 
 ```
 regexp/
-  syntax/      scanner + parser → AST; Onigmo grammar & escapes
-  compile/     AST → VM program (instructions + capture/group metadata)
-  vm/          backtracking matcher: thread state, backtrack stack, memo, budget
-  charset/     character classes, POSIX classes, \p{…} Unicode properties
-  encoding/    byte/rune handling per encoding (UTF-8, ASCII-8BIT, …)
-  regexp.go    public API (Compile, Match, MatchData, named captures, replace)
+  internal/syntax/   scanner + parser → AST; Onigmo grammar & escapes
+  internal/ast/      the typed AST node set the parser produces and the compiler consumes
+  internal/compile/  AST → VM program (instructions + capture/group metadata), and the Encoding-keyed cursor (UTF-8 / ASCII-8BIT)
+  internal/vm/        backtracking matcher: thread state, backtrack stack, memo, step/recursion budget, wall-clock timeout, prefilters
+  internal/charset/  \p{…} Unicode property classification
+  regexp.go          public API (Compile/CompileEnc, Match/MatchString, WithTimeout, Encoding, MatchData with named captures)
 ```
 
 ## 4. Public API (Ruby-shaped, Go-idiomatic)
 
 ```go
-re, err := onigmo.Compile(`(?<year>\d{4})-(?<mon>\d{2})`, onigmo.None)
+re, err := onigmo.Compile(`(?<year>\d{4})-(?<mon>\d{2})`)  // default UTF-8
 m := re.Match("2026-06")          // *MatchData or nil
-m.Group("year")                   // "2026"
-m.Begin(0); m.End(0)              // byte offsets
-re.Replace(src, `\k<mon>/\k<year>`)
+m.StrName("year")                 // "2026"
+m.Begin(0); m.End(0)              // byte offsets of the whole match
+
+// An explicit encoding and a wall-clock timeout (a copy; the receiver is
+// unchanged, so a shared *Regexp stays concurrency-safe):
+bin, _ := onigmo.CompileEnc(`\xC3\xA9`, onigmo.ASCII8BIT)
+safe := re.WithTimeout(100 * time.Millisecond)
 ```
 
-`MatchData` exposes whole-match and per-group spans (by index and by name),
-pre/post match, and works in byte offsets so callers can map back to their own
-string representation. A thin adapter in `go-embedded-ruby/ruby/internal/regexp`
-maps Ruby's `Regexp`/`MatchData` onto this.
+`MatchData` exposes whole-match and per-group spans (by index via `Str`/`Begin`/
+`End` and by name via `StrName`/`IndexOfName`), `Pre`/`Post` of the match, and
+`NGroups`, all in byte offsets so callers can map back to their own string
+representation. A thin adapter in `go-embedded-ruby/ruby/internal/regexp` maps
+Ruby's `Regexp`/`MatchData` onto this — and the replacement DSL (`\k<…>`, `\&`,
+block forms) lives in that downstream adapter (Phase 5), not in this engine.
 
 ## 5. Compatibility & testing
 
@@ -165,7 +171,7 @@ maps Ruby's `Regexp`/`MatchData` onto this.
   `Match` call that is offset 0 (so it behaves like `\A`). Iterative scanning
   (`scan`/`gsub`), which will advance the `\G` anchor on each step, arrives with
   the replacement/scan API in a later phase.
-- **Phase 3** *(in progress)* — POSIX bracket classes, Unicode properties
+- **Phase 3** ✅ *done* — POSIX bracket classes, Unicode properties
   `\p{…}`, case-folding, multi-encoding.
 
   **POSIX bracket classes** ✅ *done* — inside a character class, `[[:name:]]`
