@@ -2,7 +2,7 @@
 
 # regexp — go-ruby-regexp
 
-[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-ruby-regexp.github.io/docs/)
+[![Docs](https://img.shields.io/badge/docs-mkdocs--material-DC2626)](https://go-ruby-regexp.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
 [![Phase](https://img.shields.io/badge/phase-0--4%20complete-1a7f37)](docs/plan-regexp.md)
