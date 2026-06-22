@@ -1,4 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>go-onigmo/.github"]
+  "extends": ["github>go-ruby-regexp/.github"]
 }
