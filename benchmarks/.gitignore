@@ -1,0 +1,9 @@
+# Build/scratch output of run.sh: the Onigmo C checkout + install, the compiled
+# harnesses, and the materialised corpus. results.csv IS committed (it backs
+# BENCHMARKS.md), so it is not ignored.
+.work/
+
+# A stray `go build` with no -o in this directory produces a binary named after
+# the module's last path element ("benchmarks"); never commit it.
+/benchmarks
+
