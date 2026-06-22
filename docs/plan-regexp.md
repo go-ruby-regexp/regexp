@@ -1,4 +1,4 @@
-# Implementation plan — Onigmo in pure Go (`go-onigmo/regexp`)
+# Implementation plan — Onigmo in pure Go (`go-ruby-regexp/regexp`)
 
 > Goal: a **pure-Go (no cgo)** reimplementation of **Onigmo**, the regular
 > expression engine used by Ruby, as a **standalone, reusable** module. It is the
@@ -481,7 +481,7 @@ block forms) lives in that downstream adapter (Phase 5), not in this engine.
   `Regexp`/`MatchData` surface via the go-embedded-ruby adapter; replacement DSL
   (`\1`, `\k<>`, `\&`, blocks). This is the Ruby-runtime integration layer that
   *consumes* this standalone engine, so it lives in the go-embedded-ruby adapter
-  rather than in `go-onigmo/regexp` itself; the engine module's own roadmap
+  rather than in `go-ruby-regexp/regexp` itself; the engine module's own roadmap
   (Phases 0–4) is complete.
 
 ## 8. Engine status: complete
