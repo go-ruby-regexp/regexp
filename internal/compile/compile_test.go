@@ -71,43 +71,72 @@ func TestCompileAllNodeKinds(t *testing.T) {
 	}
 }
 
+// findLoop returns the single OpLoop instruction in p, failing if there is not
+// exactly one. A quantifier over a single consuming atom (Char/Class/Any/UniProp/
+// FoldChar) is fused into one OpLoop instead of the generic split/atom/jmp form.
+func findLoop(t *testing.T, p *Program) Inst {
+	t.Helper()
+	var loop *Inst
+	n := 0
+	for i := range p.Insts {
+		if p.Insts[i].Op == OpLoop {
+			loop = &p.Insts[i]
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly one OpLoop, got %d: %+v", n, p.Insts)
+	}
+	return *loop
+}
+
 func TestCompileStarLoop(t *testing.T) {
+	// a* fuses into one OpLoop over OpChar 'a', unbounded (Max == -1), zero floor,
+	// greedy. No split/jmp/extra char are emitted for it.
 	p := compilePattern(t, "a*")
-	// Expect: Save0, Split, Char, Jmp, Save1, Match.
-	if opCount(p, OpSplit) != 1 || opCount(p, OpJmp) != 1 {
-		t.Fatalf("a* should have one Split and one Jmp: %+v", p.Insts)
+	if opCount(p, OpSplit) != 0 || opCount(p, OpJmp) != 0 {
+		t.Fatalf("a* should fuse to OpLoop with no Split/Jmp: %+v", p.Insts)
+	}
+	loop := findLoop(t, p)
+	if loop.Sub != OpChar || loop.B != 'a' || loop.Min != 0 || loop.Max != -1 || !loop.Greedy {
+		t.Fatalf("a* OpLoop = %+v, want Sub=Char B='a' Min=0 Max=-1 Greedy", loop)
 	}
 }
 
 func TestCompilePlus(t *testing.T) {
+	// a+ fuses into one OpLoop over OpChar 'a' with a floor of one, unbounded.
 	p := compilePattern(t, "a+")
-	// One required Char plus the loop.
-	if opCount(p, OpChar) != 2 {
-		t.Fatalf("a+ should emit two Char (required + loop body): %+v", p.Insts)
+	if opCount(p, OpChar) != 0 {
+		t.Fatalf("a+ should fuse to OpLoop (no standalone Char): %+v", p.Insts)
+	}
+	loop := findLoop(t, p)
+	if loop.Sub != OpChar || loop.B != 'a' || loop.Min != 1 || loop.Max != -1 || !loop.Greedy {
+		t.Fatalf("a+ OpLoop = %+v, want Sub=Char B='a' Min=1 Max=-1 Greedy", loop)
 	}
 }
 
 func TestCompileBoundedRepeat(t *testing.T) {
+	// a{2,4} fuses into one OpLoop bounded [2,4]; no unrolled Char copies, no
+	// Split/Jmp.
 	p := compilePattern(t, "a{2,4}")
-	// Two required + two optional copies = four Char, two Split, no Jmp.
-	if opCount(p, OpChar) != 4 {
-		t.Fatalf("a{2,4} should emit four Char: %+v", p.Insts)
+	if opCount(p, OpChar) != 0 || opCount(p, OpSplit) != 0 || opCount(p, OpJmp) != 0 {
+		t.Fatalf("a{2,4} should fuse to one OpLoop, no Char/Split/Jmp: %+v", p.Insts)
 	}
-	if opCount(p, OpSplit) != 2 {
-		t.Fatalf("a{2,4} should emit two Split: %+v", p.Insts)
-	}
-	if opCount(p, OpJmp) != 0 {
-		t.Fatalf("a{2,4} should emit no Jmp: %+v", p.Insts)
+	loop := findLoop(t, p)
+	if loop.Sub != OpChar || loop.B != 'a' || loop.Min != 2 || loop.Max != 4 {
+		t.Fatalf("a{2,4} OpLoop = %+v, want Sub=Char B='a' Min=2 Max=4", loop)
 	}
 }
 
 func TestCompileExactRepeat(t *testing.T) {
+	// a{3} fuses into one OpLoop with Min == Max == 3.
 	p := compilePattern(t, "a{3}")
-	if opCount(p, OpChar) != 3 {
-		t.Fatalf("a{3} should emit three Char: %+v", p.Insts)
+	if opCount(p, OpChar) != 0 || opCount(p, OpSplit) != 0 {
+		t.Fatalf("a{3} should fuse to one OpLoop, no Char/Split: %+v", p.Insts)
 	}
-	if opCount(p, OpSplit) != 0 {
-		t.Fatalf("a{3} should emit no Split: %+v", p.Insts)
+	loop := findLoop(t, p)
+	if loop.Sub != OpChar || loop.B != 'a' || loop.Min != 3 || loop.Max != 3 {
+		t.Fatalf("a{3} OpLoop = %+v, want Sub=Char B='a' Min=3 Max=3", loop)
 	}
 }
 
@@ -208,54 +237,73 @@ func TestCompileHasBackref(t *testing.T) {
 }
 
 func TestCompileLazyStarSwapsSplit(t *testing.T) {
-	// A greedy a* prefers the body: split.X is the body (the next pc), split.Y the
-	// exit. A lazy a*? prefers the exit: the branches are swapped.
-	greedy := compilePattern(t, "a*")
-	lazy := compilePattern(t, "a*?")
-	var gs, ls *Inst
-	for i := range greedy.Insts {
-		if greedy.Insts[i].Op == OpSplit {
-			gs = &greedy.Insts[i]
-		}
+	// A single-atom quantifier fuses into one OpLoop, so greediness is carried on
+	// the loop's Greedy flag rather than by swapping a split's branches: a* is
+	// greedy, a*? is lazy. Both have the same atom, floor, and bound.
+	greedy := findLoop(t, compilePattern(t, "a*"))
+	lazy := findLoop(t, compilePattern(t, "a*?"))
+	if !greedy.Greedy {
+		t.Errorf("a* OpLoop must be greedy: %+v", greedy)
 	}
-	for i := range lazy.Insts {
-		if lazy.Insts[i].Op == OpSplit {
-			ls = &lazy.Insts[i]
-		}
+	if lazy.Greedy {
+		t.Errorf("a*? OpLoop must be lazy: %+v", lazy)
 	}
-	if gs == nil || ls == nil {
-		t.Fatal("expected one OpSplit in each of a* and a*?")
-	}
-	// In a*, the split sits just before the body, so its preferred X is split pc+1.
-	for i := range greedy.Insts {
-		if &greedy.Insts[i] == gs {
-			if gs.X != i+1 {
-				t.Errorf("greedy a*: split.X = %d want body at %d", gs.X, i+1)
-			}
-			// Lazy must have the branches swapped: its Y is the body (pc+1), X the exit.
-			if ls.Y != i+1 {
-				t.Errorf("lazy a*?: split.Y = %d want body at %d", ls.Y, i+1)
-			}
-			if ls.X == ls.Y {
-				t.Errorf("lazy a*?: split branches not distinct: %#v", ls)
-			}
-		}
+	if greedy.Sub != lazy.Sub || greedy.B != lazy.B || greedy.Min != lazy.Min || greedy.Max != lazy.Max {
+		t.Errorf("a* and a*? must differ only in Greedy: %+v vs %+v", greedy, lazy)
 	}
 }
 
 func TestCompileLazyBoundedSwapsSplit(t *testing.T) {
-	// a{0,2}? emits two optional splits, each preferring the exit (X) over the
-	// body (Y). Confirm at least one split has X pointing past its body.
-	p := compilePattern(t, "a{0,2}?")
-	if opCount(p, OpSplit) != 2 {
-		t.Fatalf("a{0,2}? should emit two splits: %+v", p.Insts)
+	// a{0,2}? fuses into one lazy OpLoop bounded [0,2]; the lazy preference is the
+	// Greedy=false flag, not a swapped split.
+	loop := findLoop(t, compilePattern(t, "a{0,2}?"))
+	if loop.Greedy {
+		t.Errorf("a{0,2}? OpLoop must be lazy: %+v", loop)
 	}
-	for i := range p.Insts {
-		if p.Insts[i].Op == OpSplit {
-			// Lazy: the body (an OpChar) is the give-back Y branch.
-			if p.Insts[p.Insts[i].Y].Op != OpChar {
-				t.Errorf("lazy bounded split %d: Y should reach the body OpChar, got %#v", i, p.Insts[p.Insts[i].Y])
-			}
+	if loop.Sub != OpChar || loop.Min != 0 || loop.Max != 2 {
+		t.Errorf("a{0,2}? OpLoop = %+v, want Sub=Char Min=0 Max=2", loop)
+	}
+	// The legacy split-based lowering is gone for a single-atom quantifier: no
+	// OpSplit should remain.
+	if c := opCount(compilePattern(t, "a{0,2}?"), OpSplit); c != 0 {
+		t.Errorf("a{0,2}? should emit no OpSplit, got %d", c)
+	}
+}
+
+// TestCompileNonFusedBoundedRepeat exercises the generic (non-fused) bounded
+// repeat lowering, reached when the quantified body is NOT a single consuming
+// atom — here a group. Such a quantifier still emits the chain of optional splits
+// (one per max-min step), with the greedy form preferring the body branch and the
+// lazy form preferring the exit, so both branch-assignment arms of repeat run.
+func TestCompileNonFusedBoundedRepeat(t *testing.T) {
+	// Greedy (?:ab){0,2}: two optional splits, no fusion (the body is two chars).
+	g := compilePattern(t, "(?:ab){0,2}")
+	if opCount(g, OpLoop) != 0 {
+		t.Fatalf("(?:ab){0,2} must not fuse (multi-atom body): %+v", g.Insts)
+	}
+	if opCount(g, OpSplit) != 2 {
+		t.Fatalf("(?:ab){0,2} should emit two optional splits, got %d", opCount(g, OpSplit))
+	}
+	// Greedy prefers the body: each split's X is the body that immediately follows.
+	for i := range g.Insts {
+		if g.Insts[i].Op == OpSplit && g.Insts[i].X != i+1 {
+			t.Errorf("greedy bounded split %d: X=%d want body at %d", i, g.Insts[i].X, i+1)
+		}
+	}
+	// Lazy (?:ab){0,2}?: same two splits, but each prefers the exit (Y is the body).
+	l := compilePattern(t, "(?:ab){0,2}?")
+	if opCount(l, OpSplit) != 2 {
+		t.Fatalf("(?:ab){0,2}? should emit two optional splits, got %d", opCount(l, OpSplit))
+	}
+	for i := range l.Insts {
+		if l.Insts[i].Op == OpSplit && l.Insts[i].Y != i+1 {
+			t.Errorf("lazy bounded split %d: Y=%d want body at %d", i, l.Insts[i].Y, i+1)
+		}
+	}
+	// Both compile to a correct matcher regardless of the lowering shape.
+	for _, pat := range []string{"(?:ab){0,2}", "(?:ab){0,2}?"} {
+		if _, err := syntax.Parse(pat); err != nil {
+			t.Fatalf("parse %q: %v", pat, err)
 		}
 	}
 }

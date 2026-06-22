@@ -110,6 +110,22 @@ const (
 	OpAtomicEnd
 	// OpMatch reports a successful match.
 	OpMatch
+	// OpLoop is a fused quantifier over a single input-consuming atom (OpChar,
+	// OpClass, OpAny, OpUniProp, or OpFoldChar) with no captures or nested
+	// branching inside it. It replaces the generic split/atom/jmp loop the compiler
+	// would otherwise emit for X{Min,Max} when X is exactly one such atom, so a run
+	// like [a-z]+ or .x's dot or \p{L}+ advances in one tight inner loop instead of
+	// re-dispatching the outer switch (and touching the memo) per character. The
+	// repeated atom is carried inline: Sub names which atom opcode the loop runs,
+	// and the atom's own fields (B, Ranges, RuneRanges, Props, Prop, Negate, Fold,
+	// DotAll, Rune) are reused on this same Inst to describe it. Min/Max bound the
+	// repetition count (Max == -1 is unbounded) and Quant-style Greedy selects the
+	// matching preference. X is the continuation pc just past the loop. It produces
+	// exactly the same set of matches, in the same leftmost-first order, as the
+	// unfused form: greedy consumes the maximal run then gives back one atom at a
+	// time on backtrack; lazy consumes the minimum then takes one more atom at a
+	// time when forced.
+	OpLoop
 )
 
 // Inst is a single VM instruction. Only the fields relevant to its Op are used.
@@ -129,8 +145,10 @@ type Inst struct {
 	Behind     bool                 // OpLook
 	Fold       bool                 // OpClass (case-insensitive, /i: rune-aware folding)
 	DotAll     bool                 // OpAny (Ruby /m: the dot also matches '\n')
-	Min        int                  // OpLook (lookbehind width lower bound)
-	Max        int                  // OpLook (lookbehind width upper bound)
+	Min        int                  // OpLook (lookbehind width lower bound), OpLoop (min count)
+	Max        int                  // OpLook (lookbehind width upper bound), OpLoop (max count, -1 unbounded)
+	Sub        Op                   // OpLoop: the opcode of the single atom the loop repeats
+	Greedy     bool                 // OpLoop: greedy (longest-first) vs lazy (shortest-first)
 }
 
 // Program is a compiled regular expression: the instruction list, the number of
@@ -154,6 +172,12 @@ type Program struct {
 	Names      map[string]int
 	HasBackref bool
 	HasCall    bool
+	// HasSplit records whether any instruction is an OpSplit (a quantifier or
+	// alternation decision point). The VM consults the (pc, sp) memo only at
+	// OpSplit, so a split-free program (a plain literal/class/dot run) never needs
+	// the memo allocated at all; the VM uses this to skip that allocation and its
+	// per-position reset, which on a long no-split scan would otherwise be O(n²).
+	HasSplit bool
 	// Enc is the input encoding (UTF8 by default, ASCII8BIT for binary /n). It
 	// governs how the dot and byte-oriented classes advance: by a whole code
 	// point in UTF8 mode, by one byte in ASCII8BIT mode.
@@ -217,15 +241,18 @@ func CompileEnc(r syntax.Result, enc Encoding) *Program {
 	}
 	hasBackref := false
 	hasCall := false
+	hasSplit := false
 	for i := range b.insts {
 		switch b.insts[i].Op {
 		case OpBackref:
 			hasBackref = true
 		case OpCall:
 			hasCall = true
+		case OpSplit:
+			hasSplit = true
 		}
 	}
-	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref, HasCall: hasCall, Enc: enc}
+	return &Program{Insts: b.insts, NumCapture: r.NumCapture, Names: r.Names, HasBackref: hasBackref, HasCall: hasCall, HasSplit: hasSplit, Enc: enc}
 }
 
 // node compiles one AST node, appending its instructions.
@@ -359,7 +386,46 @@ func (b *builder) alternate(a *ast.Alternate) {
 // (bounded max). The split at each optional decision point encodes the matching
 // preference: greedy tries the body first and the exit on backtrack, non-greedy
 // (lazy, s.Greedy == false) tries the exit first and the body only when forced.
+// fusableAtom reports the single input-consuming atom instruction node compiles
+// to, and true, when node is exactly one such atom (OpChar, OpClass, OpAny,
+// OpUniProp, OpFoldChar) with nothing else — no capture save, no nested branch.
+// A quantifier over such an atom can be lowered to one fused OpLoop instead of
+// the generic split/atom/jmp loop, letting its run advance in a tight inner loop.
+// Anything more complex (a group, an alternation, a multi-atom concat, an anchor)
+// is not fusable and returns ok=false, so the generic lowering is used and
+// semantics are unchanged.
+func fusableAtom(node ast.Node) (Inst, bool) {
+	tmp := &builder{entry: map[int]int{}}
+	tmp.node(node)
+	if len(tmp.insts) != 1 {
+		return Inst{}, false
+	}
+	in := tmp.insts[0]
+	switch in.Op {
+	case OpChar, OpClass, OpAny, OpUniProp, OpFoldChar:
+		return in, true
+	}
+	return Inst{}, false
+}
+
 func (b *builder) repeat(s *ast.Star) {
+	// Fuse a quantifier over a single consuming atom (e.g. [a-z]+, .*, \p{L}+,
+	// a{2,4}) into one OpLoop: the VM then scans the run in a tight inner loop
+	// instead of dispatching split/atom/jmp per character. The fused form produces
+	// the identical match set and leftmost-first order; only its inner-loop speed
+	// differs. A zero Max (X{0,0}) consumes nothing, so it is left to the generic
+	// path (which emits no loop at all) rather than a degenerate OpLoop.
+	if atom, ok := fusableAtom(s.Sub); ok && s.Max != 0 {
+		loop := atom
+		loop.Sub = atom.Op
+		loop.Op = OpLoop
+		loop.Min = s.Min
+		loop.Max = s.Max
+		loop.Greedy = s.Greedy
+		pc := b.emit(loop)
+		b.insts[pc].X = len(b.insts)
+		return
+	}
 	// Required copies.
 	for i := 0; i < s.Min; i++ {
 		b.node(s.Sub)

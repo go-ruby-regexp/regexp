@@ -397,6 +397,15 @@ func TestRequiredLiteralDegenerateGuards(t *testing.T) {
 	if got := requiredLiteral(stray); got != "ab" {
 		t.Fatalf("stray OpLookEnd: got %q, want ab", got)
 	}
+	// A fused OpLoop whose continuation X does not advance must stop the spine walk
+	// rather than loop, returning the run accumulated before it. An OpChar atom with
+	// Min >= 2 contributes a 2+ byte run ("aa") the flush-before-stop keeps.
+	badLoop := []compile.Inst{
+		{Op: compile.OpLoop, Sub: compile.OpChar, B: 'a', Min: 2, Max: 2, X: 0}, // X == 0 <= pc
+	}
+	if got := requiredLiteral(badLoop); got != "aa" {
+		t.Fatalf("non-advancing OpLoop X: got %q, want aa", got)
+	}
 	// A program of only zero-width pass-throughs accumulates no literal and runs off
 	// the end without flushing a 2+ run.
 	var passes []compile.Inst
@@ -585,12 +594,10 @@ func TestPrefilterTransparency(t *testing.T) {
 func bruteForce(t *testing.T, prog *compile.Program, input string) (int, int, bool) {
 	t.Helper()
 	for start := 0; start <= len(input); start++ {
-		caps := make([]int, prog.NumSlots())
-		for i := range caps {
-			caps[i] = -1
-		}
-		m := &machine{prog: prog, input: input, budget: DefaultBudget, visited: map[int64]bool{}, memoize: !prog.HasBackref && !prog.HasCall}
-		res, ok, err := m.run(start, caps)
+		m := &machine{prog: prog, input: input, budget: DefaultBudget, memoize: !prog.HasBackref && !prog.HasCall}
+		m.memo.init(len(prog.Insts), len(input), prog.HasSplit)
+		m.caps = make([]int, prog.NumSlots())
+		res, ok, err := m.run(start)
 		if err != nil {
 			t.Fatalf("brute run: %v", err)
 		}

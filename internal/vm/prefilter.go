@@ -152,6 +152,23 @@ loop:
 				recordFirst(set)
 			}
 			break loop
+		case compile.OpLoop:
+			// A fused quantifier (e.g. a*b, [a-z]+, a{2,4}c) is the leading construct
+			// only when no fixed byte has been consumed yet. If a literal prefix
+			// already preceded it the first-byte set is pinned, so just end the
+			// analysable prefix. Otherwise derive the loop's first-byte set
+			// (firstByteSet handles the atom and, for a Min==0 loop that can match
+			// zero reps, the union with the continuation past it); if it is fully
+			// byte-determinable, record it. Either way the variable-length run breaks
+			// the literal prefix, so the prefix ends here.
+			if firstResolved {
+				break loop
+			}
+			var set byteSet
+			if firstByteSet(insts, pc, &set, 0) {
+				recordFirst(set)
+			}
+			break loop
 		default:
 			// Any other instruction (split/alternation, dot, fold, property, look,
 			// call, backref, anchors we do not model, …) ends the analysable prefix.
@@ -242,6 +259,35 @@ func requiredLiteral(insts []compile.Inst) string {
 			// An alternation fork: neither branch is forced, so no later byte is
 			// required; the spine ends here.
 			return best
+		case compile.OpLoop:
+			// A fused quantifier over a single atom. Its required minimum (Min reps)
+			// is forced and so part of the mandatory spine; the optional remainder is
+			// not. Only an OpChar atom contributes FIXED bytes: Min copies of its byte
+			// are required in order, so append them to the current run (this recovers
+			// a{3} -> "aaa" and keeps a{3}b -> "aaab" contiguous when the count is
+			// exact). When the count is not exact (Min < Max, or unbounded) the run
+			// length past the forced minimum is variable, breaking byte adjacency, so
+			// the run is flushed after the forced bytes. A non-OpChar atom (dot, class,
+			// fold, property) contributes no fixed byte, and a Min==0 loop forces
+			// nothing, so both just flush. The continuation past the loop (in.X) stays
+			// on the spine. Follow only forward so a degenerate target cannot loop.
+			if in.Sub == compile.OpChar && in.Min >= 1 {
+				for i := 0; i < in.Min; i++ {
+					run.WriteByte(in.B)
+				}
+				if in.Max != in.Min {
+					flush()
+				}
+			} else {
+				flush()
+			}
+			if in.X <= pc {
+				// Degenerate (non-advancing) continuation: stop, but flush first so a
+				// run still open across an exact-count loop (Min == Max) is not lost.
+				flush()
+				return best
+			}
+			pc = in.X
 		case compile.OpLook:
 			// A lookaround is a zero-width, unconditional assertion: its inline body
 			// (which OpLook.X skips past) consumes none of the matched span, so its
@@ -343,6 +389,21 @@ func firstByteSet(insts []compile.Inst, pc int, set *byteSet, depth int) bool {
 				return false
 			}
 			return firstByteSet(insts, in.Y, set, depth+1)
+		case compile.OpLoop:
+			// A fused quantifier over a single atom. The atom's first byte must lead
+			// every repetition, so its byte set contributes; only an OpChar/OpClass
+			// atom is byte-reducible (the dot, a fold, or a property is not). When the
+			// loop can match zero reps (Min == 0) the continuation past it (in.X) can
+			// lead instead, so its first bytes must be unioned in too; a non-reducible
+			// or empty-matching continuation then fails the whole set, exactly as a
+			// possibly-empty optional does.
+			if !loopAtomFirstBytes(in, set) {
+				return false
+			}
+			if in.Min == 0 {
+				return firstByteSet(insts, in.X, set, depth+1)
+			}
+			return true
 		case compile.OpJmp:
 			// Follow the unconditional jump (the tail of an alternation branch). A
 			// back-edge (jmp to an earlier pc, the loop of a *-quantifier) would lead
@@ -359,6 +420,30 @@ func firstByteSet(insts []compile.Inst, pc int, set *byteSet, depth int) bool {
 			return false
 		}
 	}
+}
+
+// loopAtomFirstBytes unions, into set, the bytes the repeated atom of a fused
+// OpLoop can begin with, reporting whether that atom is byte-reducible at all.
+// The loop carries its atom inline: in.Sub names the atom's real opcode and the
+// atom's own fields (B for OpChar, the class fields for OpClass) live on the same
+// Inst. An OpChar atom contributes its single byte; an OpClass atom its
+// (byte-reducible) class set. A dot, a fold, or a property atom depends on UTF-8
+// encoding of code points and is not reducible here, so ok is false and the
+// caller gives up the prefilter for it.
+func loopAtomFirstBytes(in compile.Inst, set *byteSet) bool {
+	switch in.Sub {
+	case compile.OpChar:
+		set.add(in.B)
+		return true
+	case compile.OpClass:
+		cs, ok := classFirstBytes(in)
+		if !ok {
+			return false
+		}
+		orInto(set, cs)
+		return true
+	}
+	return false
 }
 
 // orInto unions src into dst.
