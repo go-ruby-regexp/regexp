@@ -37,8 +37,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/go-onigmo/regexp/internal/ast"
-	"github.com/go-onigmo/regexp/internal/charset"
+	"github.com/go-ruby-regexp/regexp/internal/ast"
+	"github.com/go-ruby-regexp/regexp/internal/charset"
 )
 
 // ErrSyntax is the base error returned for malformed patterns. All parse

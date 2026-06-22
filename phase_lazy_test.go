@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // TestLazyQuantifiers asserts the exact spans of non-greedy quantifiers with

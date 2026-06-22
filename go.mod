@@ -1,3 +1,3 @@
-module github.com/go-onigmo/regexp
+module github.com/go-ruby-regexp/regexp
 
 go 1.26.4

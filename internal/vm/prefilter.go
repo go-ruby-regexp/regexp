@@ -3,7 +3,7 @@ package vm
 import (
 	"strings"
 
-	"github.com/go-onigmo/regexp/internal/compile"
+	"github.com/go-ruby-regexp/regexp/internal/compile"
 )
 
 // byteSet is a 256-bit bitset over the possible first byte of a match. It is the

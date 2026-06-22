@@ -3,7 +3,7 @@ package onigmo_test
 import (
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // TestInlineDotAll exercises the m option (Ruby's /m): the dot matches a newline

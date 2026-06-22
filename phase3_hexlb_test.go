@@ -3,7 +3,7 @@ package onigmo_test
 import (
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // TestHexDigitClass pins the \h hex-digit class and its complement \H, both as a

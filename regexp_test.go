@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-onigmo/regexp/internal/syntax"
+	"github.com/go-ruby-regexp/regexp/internal/syntax"
 )
 
 func TestCompileError(t *testing.T) {

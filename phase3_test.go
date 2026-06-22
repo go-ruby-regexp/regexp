@@ -3,7 +3,7 @@ package onigmo_test
 import (
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 func TestPosixClassMatch(t *testing.T) {

@@ -3,8 +3,8 @@
 package compile
 
 import (
-	"github.com/go-onigmo/regexp/internal/ast"
-	"github.com/go-onigmo/regexp/internal/syntax"
+	"github.com/go-ruby-regexp/regexp/internal/ast"
+	"github.com/go-ruby-regexp/regexp/internal/syntax"
 )
 
 // Encoding selects how the byte-oriented input-advancing atoms — the dot

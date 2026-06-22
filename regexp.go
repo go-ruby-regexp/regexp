@@ -3,9 +3,9 @@ package onigmo
 import (
 	"time"
 
-	"github.com/go-onigmo/regexp/internal/compile"
-	"github.com/go-onigmo/regexp/internal/syntax"
-	"github.com/go-onigmo/regexp/internal/vm"
+	"github.com/go-ruby-regexp/regexp/internal/compile"
+	"github.com/go-ruby-regexp/regexp/internal/syntax"
+	"github.com/go-ruby-regexp/regexp/internal/vm"
 )
 
 // Regexp is a compiled regular expression, safe for concurrent use by multiple

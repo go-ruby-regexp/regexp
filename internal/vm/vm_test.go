@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-onigmo/regexp/internal/ast"
-	"github.com/go-onigmo/regexp/internal/compile"
-	"github.com/go-onigmo/regexp/internal/syntax"
+	"github.com/go-ruby-regexp/regexp/internal/ast"
+	"github.com/go-ruby-regexp/regexp/internal/compile"
+	"github.com/go-ruby-regexp/regexp/internal/syntax"
 )
 
 // build parses, compiles, and returns a program for testing.

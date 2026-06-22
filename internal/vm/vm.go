@@ -8,9 +8,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/go-onigmo/regexp/internal/ast"
-	"github.com/go-onigmo/regexp/internal/charset"
-	"github.com/go-onigmo/regexp/internal/compile"
+	"github.com/go-ruby-regexp/regexp/internal/ast"
+	"github.com/go-ruby-regexp/regexp/internal/charset"
+	"github.com/go-ruby-regexp/regexp/internal/compile"
 )
 
 // ErrBudget is returned when a match exceeds the configured backtrack-step

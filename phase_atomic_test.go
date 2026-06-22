@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // atomicCap is one expected capturing group: its matched text and its begin

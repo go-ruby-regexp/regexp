@@ -3,7 +3,7 @@ package compile
 import (
 	"testing"
 
-	"github.com/go-onigmo/regexp/internal/syntax"
+	"github.com/go-ruby-regexp/regexp/internal/syntax"
 )
 
 // compilePattern parses and compiles a pattern for testing.

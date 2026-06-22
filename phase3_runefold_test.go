@@ -3,7 +3,7 @@ package onigmo_test
 import (
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // TestRuneFold exercises rune-level case-insensitive matching (/i): a multi-byte

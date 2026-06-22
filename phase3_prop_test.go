@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // TestUnicodePropMatch checks the standalone \p{…} atom against hardcoded

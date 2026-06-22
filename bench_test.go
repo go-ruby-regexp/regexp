@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // This file is a representative benchmark suite exercising the engine through its

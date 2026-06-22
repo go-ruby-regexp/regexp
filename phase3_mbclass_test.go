@@ -3,7 +3,7 @@ package onigmo_test
 import (
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // Phase 3 multi-encoding (literal multi-byte character-class members): in the

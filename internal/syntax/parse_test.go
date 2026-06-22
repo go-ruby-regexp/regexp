@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-onigmo/regexp/internal/ast"
+	"github.com/go-ruby-regexp/regexp/internal/ast"
 )
 
 // mustParse parses p, failing the test on error.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	onigmo "github.com/go-onigmo/regexp"
+	onigmo "github.com/go-ruby-regexp/regexp"
 )
 
 // rubyCase is one (pattern, input) pair for differential testing against MRI.

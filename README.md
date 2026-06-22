@@ -1,8 +1,8 @@
-<p align="center"><img src="https://raw.githubusercontent.com/go-onigmo/brand/main/social/go-onigmo-regexp.png" alt="go-onigmo/regexp" width="720"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/go-ruby-regexp/brand/main/social/go-ruby-regexp-regexp.png" alt="go-ruby-regexp/regexp" width="720"></p>
 
-# regexp — go-onigmo
+# regexp — go-ruby-regexp
 
-[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-onigmo.github.io/docs/)
+[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9B1C2E)](https://go-ruby-regexp.github.io/docs/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
 [![Phase](https://img.shields.io/badge/phase-0--4%20complete-1a7f37)](docs/plan-regexp.md)
