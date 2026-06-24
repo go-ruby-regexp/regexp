@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-ruby-regexp/regexp/internal/ast"
 	"github.com/go-ruby-regexp/regexp/internal/charset"
@@ -1144,28 +1143,15 @@ func (m *machine) restoreSlots(saved []slotVal) {
 // "é" and /k/i matches the Kelvin sign). Like every rune-aware atom it refuses to
 // match at a UTF-8 continuation byte and returns ok=false at end of input.
 func (m *machine) foldCharStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) {
-		return false, 0
-	}
-	if m.prog.Enc == compile.ASCII8BIT {
-		// Binary mode: folding is ASCII-only and per byte. The pattern code point
-		// is matched against the single input byte with ASCII case flipping; a
-		// non-ASCII pattern code point (or input byte) only matches its exact
-		// byte, which a one-byte read of a multi-byte partner never is.
-		b := m.input[sp]
-		if in.Rune < 128 && (byte(in.Rune) == b || swapASCIICase(byte(in.Rune)) == b) {
-			return true, 1
-		}
-		return false, 0
-	}
-	if isContinuationByte(m.input[sp]) {
-		return false, 0
-	}
-	r, w := utf8.DecodeRuneInString(m.input[sp:])
-	if charset.FoldEqual(in.Rune, r) {
-		return true, w
-	}
-	return false, 0
+	return foldCharStepCtx(m.ctx(), in, sp)
+}
+
+// ctx packages the machine's read-only matching context (input, encoding, \G
+// origin) so the atom acceptance tests can be shared verbatim with the DFA
+// executor; both call the same foldCharStepCtx / anyStepCtx / classStepCtx /
+// propStepCtx, guaranteeing the DFA accepts exactly the bytes the VM does.
+func (m *machine) ctx() dfaCtx {
+	return dfaCtx{input: m.input, enc: m.prog.Enc, gpos: m.gpos}
 }
 
 // anyStep reports whether the dot (OpAny) matches at position sp and, if so, how
@@ -1179,23 +1165,7 @@ func (m *machine) foldCharStep(in compile.Inst, sp int) (ok bool, width int) {
 // engine is lenient — a documented divergence). It returns ok=false at end of
 // input.
 func (m *machine) anyStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) {
-		return false, 0
-	}
-	if !in.DotAll && m.input[sp] == '\n' {
-		return false, 0
-	}
-	if m.prog.Enc == compile.ASCII8BIT {
-		return true, 1
-	}
-	if isContinuationByte(m.input[sp]) {
-		// UTF8 mode: like MRI, which positions only at character boundaries, the
-		// dot never starts inside a multi-byte sequence, so a start offset landing
-		// on a continuation byte fails and only a code-point-aligned offset matches.
-		return false, 0
-	}
-	_, w := utf8.DecodeRuneInString(m.input[sp:])
-	return true, w
+	return anyStepCtx(m.ctx(), in, sp)
 }
 
 // classStep reports whether the OpClass instruction in matches at position sp
@@ -1212,49 +1182,7 @@ func (m *machine) anyStep(in compile.Inst, sp int) (ok bool, width int) {
 // UTF-8 code point in UTF8 mode and tests a single byte in ASCII8BIT mode. It
 // returns ok=false at end of input.
 func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) {
-		return false, 0
-	}
-	runeAware := len(in.Props) != 0 || len(in.RuneRanges) != 0 || in.Fold
-	if m.prog.Enc == compile.ASCII8BIT {
-		// Binary mode: every class is byte-oriented and consumes one byte. A
-		// rune-aware class tests its byte ranges per byte; its code-point members
-		// (which require a multi-byte read) can never match a single byte, so a
-		// byte is accepted only by the byte ranges, then negated.
-		if !runeAware {
-			if classMatch(in, m.input[sp]) {
-				return true, 1
-			}
-			return false, 0
-		}
-		if classMatchByteRanges(in, m.input[sp]) {
-			return true, 1
-		}
-		return false, 0
-	}
-	if !runeAware {
-		// UTF8 mode, byte-oriented class: decode a code point and test it against
-		// the byte ranges as code-point bounds, advancing the whole code point.
-		if isContinuationByte(m.input[sp]) {
-			return false, 0
-		}
-		r, w := utf8.DecodeRuneInString(m.input[sp:])
-		if rangesContainRune(in.Ranges, r) != in.Negate {
-			return true, w
-		}
-		return false, 0
-	}
-	if isContinuationByte(m.input[sp]) {
-		// Mid-code-point: a rune-aware atom never matches off a UTF-8 boundary,
-		// so the byte-oriented scan skips past continuation bytes just as MRI,
-		// which positions by character, never starts inside one.
-		return false, 0
-	}
-	r, w := utf8.DecodeRuneInString(m.input[sp:])
-	if classMatchRune(in, r) {
-		return true, w
-	}
-	return false, 0
+	return classStepCtx(m.ctx(), in, sp)
 }
 
 // classMatchByteRanges reports whether byte b falls in any of a class's byte
@@ -1282,31 +1210,7 @@ func rangesContainRune(ranges []ast.ClassRange, r rune) bool {
 // at position sp and, if so, its byte length. It returns ok=false at end of
 // input.
 func (m *machine) propStep(in compile.Inst, sp int) (ok bool, width int) {
-	if sp >= len(m.input) {
-		return false, 0
-	}
-	if m.prog.Enc == compile.ASCII8BIT {
-		// Binary mode: a property is ASCII-only and tests the single input byte,
-		// advancing one byte. A high byte (0x80–0xFF) is a lone byte belonging to no
-		// property — it must NOT be interpreted as the Latin-1 code point of the
-		// same value (e.g. 0xC3 is not a word character in /n, unlike U+00C3), so
-		// membership is consulted only for ASCII bytes and the member-local Negate
-		// is applied last, exactly as MRI does on an ASCII-8BIT string.
-		b := m.input[sp]
-		inSet := b < 0x80 && charset.Match(in.Prop.Name, false, rune(b))
-		if inSet != in.Prop.Negate {
-			return true, 1
-		}
-		return false, 0
-	}
-	if isContinuationByte(m.input[sp]) {
-		return false, 0
-	}
-	r, w := utf8.DecodeRuneInString(m.input[sp:])
-	if charset.Match(in.Prop.Name, in.Prop.Negate, r) {
-		return true, w
-	}
-	return false, 0
+	return propStepCtx(m.ctx(), in, sp)
 }
 
 // isContinuationByte reports whether b is a UTF-8 continuation byte (0x80–0xBF),

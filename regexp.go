@@ -15,6 +15,14 @@ import (
 type Regexp struct {
 	prog   *compile.Program
 	source string
+	// dfa is the lazy-NFA accelerator for the matchable subset (no backreference,
+	// call, lookaround, atomic group, or over-large bounded loop). It finds the
+	// leftmost-first whole-match span in linear time, one step per input position,
+	// replacing the backtracking VM's per-character dispatch for the search /
+	// is-match case and for locating the bounds the VM is anchored to when
+	// submatches are needed. It is nil when the program is outside the subset, in
+	// which case every match runs on the backtracking VM. Built once at compile.
+	dfa *vm.DFA
 	// timeout is the wall-clock limit for a single match (Ruby's Regexp.timeout
 	// equivalent). Zero means no time limit. It is set only by WithTimeout, which
 	// returns a copy, keeping a shared Regexp immutable.
@@ -56,7 +64,8 @@ func CompileEnc(pattern string, enc Encoding) (*Regexp, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Regexp{prog: compile.CompileEnc(res, enc), source: pattern}, nil
+	prog := compile.CompileEnc(res, enc)
+	return &Regexp{prog: prog, source: pattern, dfa: vm.BuildDFA(prog)}, nil
 }
 
 // Encoding returns the input encoding the Regexp matches under (Ruby's
@@ -103,6 +112,17 @@ func (re *Regexp) deadline() time.Time {
 // or the internal step budget is exhausted, Match returns nil — a pathological
 // pattern is bounded rather than allowed to run unboundedly.
 func (re *Regexp) Match(s string) *MatchData {
+	// Capture-free subset: the lazy NFA's leftmost-first span IS the whole answer
+	// (there are no submatches to extract), so skip the backtracking VM entirely and
+	// take the linear-time path. It is bounded by construction, so a configured
+	// timeout never needs to fire on it.
+	if re.dfa != nil && re.prog.NumCapture == 0 {
+		b, e, ok := re.dfa.Search(s, re.prog.Enc, 0)
+		if !ok {
+			return nil
+		}
+		return &MatchData{input: s, caps: []int{b, e}, ngroups: 0, names: re.prog.Names}
+	}
 	caps, ok, err := vm.MatchTimeout(re.prog, s, vm.DefaultBudget, re.deadline())
 	if err != nil || !ok {
 		return nil
@@ -110,8 +130,18 @@ func (re *Regexp) Match(s string) *MatchData {
 	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
 }
 
-// MatchString reports whether s contains a match of the regular expression.
+// MatchString reports whether s contains a match of the regular expression. When
+// the program is in the lazy-NFA subset (no backreference, call, lookaround,
+// atomic group, or over-large bounded loop) the is-match question is answered by
+// the linear-time NFA simulation rather than the backtracking VM — one step per
+// input position — even for a pattern with capturing groups, since whether a match
+// exists never depends on which text the groups captured. The backtracking VM is
+// used only for programs outside the subset.
 func (re *Regexp) MatchString(s string) bool {
+	if re.dfa != nil {
+		_, _, ok := re.dfa.Search(s, re.prog.Enc, 0)
+		return ok
+	}
 	return re.Match(s) != nil
 }
 
