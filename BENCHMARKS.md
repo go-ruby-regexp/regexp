@@ -1,16 +1,32 @@
-# Performance parity — go-ruby-regexp vs Onigmo (C) / Go regexp (2026-06-22)
+# Performance parity — go-ruby-regexp vs Onigmo (C) / Go regexp (2026-06-24)
 
-> **Inner-loop update (2026-06-22):** the four structural fixes named in the
-> action list below are now **implemented** — a mutable capture array with an undo
+> **Lazy-DFA update (2026-06-24):** the remaining inner-loop lever named below —
+> **a lazy / on-the-fly NFA simulation (RE2 / Go-`regexp` style)** for the
+> matchable subset — is now **implemented**. A Thompson-NFA derived from the
+> program (fused `OpLoop` unrolled back into split/atom/jmp) is simulated with a
+> **priority-ordered thread list** (preserving Ruby's leftmost-FIRST end), one step
+> per input position with a precomputed epsilon-closure cache, replacing the
+> backtracking VM's per-character dispatch for the search / is-match case. It runs
+> for programs with **no backreference, call, lookaround, atomic group, or
+> over-large bounded loop**, and only when **no strong literal filter** (a required
+> prefix or interior literal) is present — those keep the VM's `strings.Index`
+> scan, which already beats C. The backtracking VM remains the source of truth for
+> every excluded feature and for submatch extraction. Match-time on the targeted
+> inner-loop cases improved **another 1.6–4.3×** over the post-fusion baseline,
+> closing the gap to C from ~0.05–0.20× to **0.20–0.63×** (e.g. `[a-zA-Z]+`
+> 403→107 ns = 3.8×, `\A\w+` 439→188 ns, `\p{L}+` 359→178 ns, `(\w+)=(\w+)`
+> 2593→862 ns = 3.0×, `email` 7.9→3.8 ms ≈ RE2). **ReDoS cases improved 4–43×**
+> (`\A(a*)*b` 41→1 µs, `\A(a|aa)+b` 7.8→1.8 µs — still linear while C Onigmo times
+> out). Correctness is unchanged: the lazy NFA agrees with the backtracker on the
+> leftmost-first span on the full `diff_ruby` cross-check (and C Onigmo / Ruby /
+> RE2), 100 % coverage held. The before→after detail is in *Lazy-DFA — results*.
+
+> **Earlier inner-loop update (2026-06-22):** a mutable capture array with an undo
 > trail (no per-`OpSave` `[]int` copy), a flat generation-stamped `(pc,sp)` bitset
 > memo (replacing `map[int64]bool`), **fused `OpLoop` quantifier opcodes** for
 > single-atom `Char/Class/Any/UniProp/FoldChar` runs, and a first-byte
-> `IndexByte`-driven start scan. Match-time on the inner-loop cases roughly
-> **halved**, narrowing the gap to C by ~1.5–2× (e.g. `\p{L}+` 691→359 ns, `.x`
-> 4.36→2.57 ms, `email` 17.6→7.9 ms, `(\w+)=(\w+)` 4641→2593 ns). Correctness is
-> byte-identical (the leftmost-span cross-checks still agree with C Onigmo / Ruby /
-> RE2) and **ReDoS safety is preserved** — `\A(a|aa)+b` still defuses to µs while
-> C Onigmo times out. The before→after detail is in *Inner-loop fixes — results*.
+> `IndexByte`-driven start scan. Those roughly **halved** match-time on the
+> inner-loop cases and are the baseline the lazy-DFA numbers above build on.
 
 This module (`github.com/go-ruby-regexp/regexp`, formerly **go-onigmo**) is a
 from-scratch, pure-Go (cgo-free) reimplementation of **Onigmo** — the backtracking
@@ -89,6 +105,54 @@ not — see below.)*
 - **Compile time on Unicode**: our `\p{L}+` compile is **18× faster** than C
   Onigmo's (11.4 µs → 0.63 µs); C Onigmo pays a large table-build cost per compile.
 
+### Lazy-DFA — results (2026-06-24)
+The on-the-fly NFA simulation closes the inner-loop gap further. Match-time, the
+post-fusion 2026-06-22 baseline → after the lazy-DFA, ours (ns/op), vs the
+unchanged C baseline (same run, `benchmarks/results.csv`). All cases below now run
+on the lazy NFA; the literal/prefix cases (`url`, `logline`, `unanchored_literal`,
+`literal_miss`) keep the VM path and are unchanged within noise.
+
+| case | 2026-06-22 | after DFA | speedup | ours/C before → after |
+|---|---|---|---|---|
+| `[a-zA-Z]+` | 403 | **107** | **3.77×** | 0.067× → **0.25×** |
+| `(\w+)=(\w+)` (captures, is-match) | 2593 | **862** | **3.01×** | 0.21× → **0.63×** |
+| `\A\w+` (anchored) | 439 | **188** | **2.34×** | 0.114× → **0.27×** |
+| `\p{L}+` (Unicode) | 359 | **178** | **2.02×** | 0.128× → **0.26×** |
+| `[0-9]{2,4}` (bounded) | 356 | **176** | **2.02×** | 0.171× → **0.35×** |
+| `cat\|dog\|fox` (alternation hit) | 405 | **253** | **1.60×** | 0.388× → **0.62×** |
+| `email` (full scan) | 7.9 ms | **3.76 ms** | **2.10×** | 0.27× → **0.48×** (≈ RE2) |
+| `zoo\|quux\|kite` (alt. miss) | 695 µs | **561 µs** | **1.24×** | 0.745× → **0.92×** |
+| `.x` (UTF-8 miss) | 2.57 ms | **2.17 ms** | **1.18×** | 0.14× → **0.20×** |
+| `\A(a*)*b` (ReDoS) | 41.2 µs | **0.97 µs** | **42.6×** | 0.005× → **0.21×** |
+| `\A(a\|aa)+b` (ReDoS) | 7.84 µs | **1.81 µs** | **4.33×** | C **TIMEOUT** → still ∞ |
+
+What landed (semantics-preserving; the lazy NFA agrees with the backtracker on the
+leftmost-first span on the full `diff_ruby` corpus and on C Onigmo / Ruby / RE2;
+the linear-time ReDoS guarantee is inherent to the NFA simulation and the
+backtracker's bitset memo is kept for the fallback; 100 % coverage held):
+
+- **Lazy NFA simulation** (`internal/vm/dfa.go`, `dfa_run.go`). A Thompson-NFA is
+  derived once per program — fused `OpLoop` is unrolled back into split/atom/jmp,
+  every opcode outside the subset (backref, call, lookaround, atomic) makes the
+  build bail to the VM. It is simulated with a **priority-ordered thread list**
+  (each thread carrying its start offset) so the highest-priority thread to reach
+  the accept fixes the whole-match end — preserving Ruby's **leftmost-FIRST**
+  semantics, unlike a leftmost-longest set-DFA. A **precomputed epsilon-closure**
+  per node (valid when no position-dependent assertion is on the closure) makes the
+  hot step a dedup'd slice append instead of a recursive walk.
+- **Selective routing** (`BuildDFA`). The DFA is built only when there is **no
+  required literal prefix or interior literal** — those keep the VM's
+  `strings.Index` Boyer–Moore scan, which already beats C. So the DFA serves the
+  class / quantifier / alternation / anchor-led patterns it wins on, and the
+  literal/prefix patterns keep their faster VM path; net is positive with no
+  material regression.
+- **Two-engine design.** `MatchString` (is-match) and capture-free `Match` take the
+  DFA bounds directly; a pattern with capturing groups still uses the DFA for the
+  is-match question (whether a match exists never depends on captured text) and the
+  backtracking VM for actual submatch extraction. The VM and the DFA share the exact
+  per-atom acceptance tests (`*StepCtx`), so the DFA accepts exactly the bytes the
+  VM does.
+
 ### Inner-loop fixes — results (2026-06-22)
 The three structural causes below have been addressed. Match-time, before → after,
 ours (ns/op), vs the unchanged C baseline:
@@ -143,20 +207,25 @@ C Onigmo / Ruby / RE2, and the linear-time ReDoS guarantee is intact):
 > loops nested under a quantifier would recover this corner.
 
 ### Remaining gap to C — root cause
-We still trail C on raw inner-loop throughput. The residual is dispatch + the
-absence of a DFA/`memchr` forward search for the no-anchor, no-literal case (`.x`,
-`email`, `\p{L}+` re-enter the VM at every start). A bounded-size lazy-DFA cache
-for the anchored, capture-free, backref-free subset (the cases RE2 wins) would get
-linear scan speed without losing the backtracker for the feature-rich patterns.
+The lazy DFA closed most of the inner-loop gap (we now run at **0.20–0.63× of C**
+on the matchable subset, up from ~0.05–0.20×, and **match RE2 on `email`**). The
+residual is the per-step thread-list bookkeeping of an *uncached* NFA simulation:
+we recompute the priority closure each step rather than caching whole DFA states
+(transition table) the way RE2's lazy DFA does — and we still decode UTF-8 per code
+point instead of stepping a byte-class DFA. A cached-state transition table over
+byte classes is the next lever; it would mostly affect the long-scan cases (`.x`,
+`email`) where the per-position cost dominates.
 
 ### Honest bottom line
-- vs **C Onigmo**: we **win on literal/prefilter-friendly scans and on ReDoS
-  safety**, and after the inner-loop fixes we **lag ~7–15× (was 10–25×) on
-  quantifier/capture/scan throughput** — now mostly dispatch + the missing
-  DFA/`memchr` forward search, not allocation. The mutable-capture trail, bitset
-  memo, and fused `OpLoop` landed and roughly halved match-time on those cases
-  without changing matching semantics; a lazy-DFA for the capture/backref-free
-  subset is the remaining lever.
+- vs **C Onigmo**: we **win on literal/prefilter-friendly scans, on structured
+  bounded-rep scans (`ipv4` 10× faster), and on ReDoS safety**, and after the
+  lazy-DFA we **lag only ~1.6–5× (was ~7–15×) on quantifier / class / alternation
+  inner loops** — `email` now ≈ RE2. The DFA serves the capture/backref-free subset
+  at linear NFA-simulation speed while the backtracker keeps the feature-rich
+  patterns and submatch extraction; literal-prefix scans keep the VM's
+  `strings.Index` path that already beats C. The residual is the missing
+  cached-state DFA transition table (we simulate the NFA per step rather than
+  caching states), not allocation or per-character VM dispatch.
 - vs **RE2**: we are faster on alternation-miss and structured bounded-rep scans,
   slower on plain class/anchor scans, and we *have the features RE2 lacks*
   (backreferences, lookaround, atomic/possessive, subexpr calls). RE2 stays linear
@@ -167,8 +236,9 @@ linear scan speed without losing the backtracker for the feature-rich patterns.
 2. ✅ **DONE** — **Flat generation-stamped bitset memo** replacing `map[int64]bool`. (vm.go `memoGen`, `OpSplit`, `consumed`)
 3. ✅ **DONE** — **Fused `OpLoop` opcode** for single-atom `Char/Class/Any/UniProp/FoldChar` quantified runs. (compile + vm)
 4. ✅ **DONE** — **First-byte `IndexByte`-driven start scan** + prefilter taught about `OpLoop`. (vm/prefilter.go)
-5. **TODO** — **Lazy-DFA cache** for the anchored, capture-free, backref-free subset (the cases RE2 wins) — the remaining inner-loop lever.
-6. **TODO** — recover the `\A(a*)*b` constant factor with an inner-loop memo point for a fused loop nested under an outer quantifier.
+5. ✅ **DONE (2026-06-24)** — **Lazy / on-the-fly NFA simulation** for the capture/backref/lookaround/atomic-free subset (the cases RE2 wins) — leftmost-first priority thread list + precomputed epsilon-closure, routed in only when no literal prefilter applies. (`vm/dfa.go`, `vm/dfa_run.go`) Closed the inner-loop gap to **0.20–0.63× of C** (was 0.05–0.20×) and made `\A(a*)*b` linear again (41→1 µs).
+6. **TODO** — **Cached-state DFA transition table** (the true RE2 lazy DFA: memoize whole `(state, byte-class) → state` transitions instead of re-simulating the NFA per step) to push the long-scan cases (`.x`, `email`) toward C/RE2 throughput.
+7. **TODO** — recover the `\A(a*)*b` constant factor *on the VM fallback path* with an inner-loop memo point for a fused loop nested under an outer quantifier (the DFA already handles this case linearly).
 
-_Numbers: `benchmarks/results.csv` (this run, 2026-06-22). Regenerate with
+_Numbers: `benchmarks/results.csv` (this run, 2026-06-24). Regenerate with
 `benchmarks/run.sh`._
