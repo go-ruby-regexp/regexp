@@ -418,6 +418,13 @@ func TestParseErrors(t *testing.T) {
 		`\k<none>`,       // undefined group name
 		`\k<ab`,          // \k name runs to EOF without '>'
 		`\k`,             // \k without a name
+		`(?'a)`,          // missing ' in quoted group name
+		`(?'')`,          // empty quoted group name
+		`(?'a b')`,       // invalid character in quoted group name
+		`(?'ab`,          // quoted group name runs to EOF without '\''
+		`(?'a')(?'a')`,   // duplicate quoted group name
+		`\k'none'`,       // undefined quoted group name
+		`\k'ab`,          // \k quoted name runs to EOF without '\''
 		`*`,              // nothing to repeat
 		`+`,              // nothing to repeat
 		`?`,              // nothing to repeat

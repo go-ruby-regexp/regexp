@@ -506,7 +506,8 @@ func (p *parser) parseLiteralRune() ast.Node {
 }
 
 // parseGroup parses a capturing group (...), a non-capturing group (?:...), or
-// a named capturing group (?<name>...).
+// a named capturing group, written either (?<name>...) or, equivalently,
+// (?'name'...).
 func (p *parser) parseGroup() (ast.Node, error) {
 	p.next() // consume '('
 	capture := true
@@ -535,7 +536,15 @@ func (p *parser) parseGroup() (ast.Node, error) {
 			p.next() // consume '!'
 			return p.parseLook(true, true)
 		case !p.eof() && p.peek() == '<':
-			n, err := p.parseGroupName()
+			n, err := p.parseGroupName('>')
+			if err != nil {
+				return nil, err
+			}
+			name = n
+		case !p.eof() && p.peek() == '\'':
+			// The single-quote spelling (?'name'…) is exactly equivalent to the
+			// angle-bracket (?<name>…) named-capture form, as in Onigmo/Ruby.
+			n, err := p.parseGroupName('\'')
 			if err != nil {
 				return nil, err
 			}
@@ -847,12 +856,16 @@ func (p *parser) widthRange(n ast.Node) (min, max int) {
 	}
 }
 
-// parseGroupName reads a <name> after (?, returning the name (without angle
-// brackets). The opening '<' is at the cursor.
-func (p *parser) parseGroupName() (string, error) {
-	p.next() // consume '<'
+// parseGroupName reads a delimited group name, returning the name (without its
+// delimiters). The opening delimiter is at the cursor; close is the matching
+// closing delimiter. Onigmo/Ruby accept two spellings for every named
+// construct — the angle-bracket form (e.g. (?<name>…), \k<name>) and the
+// single-quote form (e.g. (?'name'…), \k'name') — so the caller passes the pair
+// it expects.
+func (p *parser) parseGroupName(close byte) (string, error) {
+	p.next() // consume the opening delimiter ('<' or '\'')
 	start := p.pos
-	for !p.eof() && p.peek() != '>' {
+	for !p.eof() && p.peek() != close {
 		c := p.peek()
 		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
 			return "", p.errorf("invalid character %q in group name", c)
@@ -860,13 +873,13 @@ func (p *parser) parseGroupName() (string, error) {
 		p.next()
 	}
 	if p.eof() {
-		return "", p.errorf("missing > in group name")
+		return "", p.errorf("missing %c in group name", close)
 	}
 	if p.pos == start {
 		return "", p.errorf("empty group name")
 	}
 	name := p.src[start:p.pos]
-	p.next() // consume '>'
+	p.next() // consume the closing delimiter
 	return name, nil
 }
 
@@ -962,13 +975,20 @@ func (p *parser) parseProp(baseNeg bool) (name string, negate bool, err error) {
 	return name, negate, nil
 }
 
-// parseNamedBackref parses \k<name>, resolving to the (already-defined) group
-// index. The cursor is just past the 'k'.
+// parseNamedBackref parses \k<name> or its equivalent single-quote spelling
+// \k'name', resolving to the (already-defined) group index. The cursor is just
+// past the 'k'. Both delimiters are accepted, matching Onigmo/Ruby.
 func (p *parser) parseNamedBackref() (ast.Node, error) {
-	if p.eof() || p.peek() != '<' {
+	var close byte
+	switch {
+	case !p.eof() && p.peek() == '<':
+		close = '>'
+	case !p.eof() && p.peek() == '\'':
+		close = '\''
+	default:
 		return nil, p.errorf("expected <name> after \\k")
 	}
-	name, err := p.parseGroupName()
+	name, err := p.parseGroupName(close)
 	if err != nil {
 		return nil, err
 	}
