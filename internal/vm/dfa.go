@@ -407,10 +407,22 @@ func (d *DFA) Search(input string, enc compile.Encoding, gpos int) (int, int, bo
 	// The cached-DFA driver accelerates the width-1 ASCII inner loop, borrowing this
 	// sim (its thread pool, atom tests, and prefilter) for the multi-byte and
 	// assertion-crossing positions it cannot key. It produces the identical leftmost
-	// -first span the per-step simulation would.
+	// -first span the per-step simulation would. On a multi-byte-heavy UTF8 haystack
+	// every position is a fallback (a per-position state intern), which is costlier
+	// than the per-step simulation; the driver detects that adaptively and returns
+	// useSim=true without scanning further, so DFA.Search re-runs the whole search on
+	// the simulation (which handles every position uniformly, no interning, no
+	// per-position allocation). The gate is a pure performance choice — both engines
+	// produce the identical leftmost-first span.
 	n := len(d.nfa.insts)
 	cs := &dfaCacheSim{c: d.cache, sim: sim, bufA: make([]int32, n), bufB: make([]int32, n)}
-	b, e, ok := cs.searchCached(d.anchored)
+	b, e, ok, useSim := cs.searchCached(d.anchored)
+	if useSim {
+		// The cached scan bailed early on a multi-byte-dominated prefix; rerun on the
+		// per-step simulation. The borrowed sim's thread list is reset at the top of
+		// search(), so resuming on it from a fresh start is safe.
+		b, e, ok = sim.search(d.anchored)
+	}
 	d.pool.Put(th)
 	return b, e, ok
 }

@@ -2,6 +2,7 @@ package vm
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -266,6 +267,43 @@ func TestCachedDFAByteClassEdges(t *testing.T) {
 		gb, ge, gok := dfa.Search(in, compile.UTF8, 0)
 		if gok != wok || (gok && (gb != wb || ge != we)) {
 			t.Errorf("input %q: DFA=(%d,%d,%v) VM=(%d,%d,%v)", in, gb, ge, gok, wb, we, wok)
+		}
+	}
+}
+
+// TestCachedDFAMultibyteGate exercises the adaptive fallback-dominance gate: over a
+// multi-byte-heavy UTF-8 haystack the cached driver falls back at (about) every
+// position, so within the opening fbGateWindow it counts at least fbGateMin
+// fallbacks, abandons the cached path (useSim) and reruns the whole search on the
+// per-step NFA simulation. The haystack is long enough to fill the gate window, and
+// patterns are exercised both with usePF=true (a multi-byte first-byte set, so the
+// rerun's prefilter-driven seed runs) and usePF=false (the dot, so the rerun's
+// no-prefilter seed runs). Every result is cross-checked against the backtracking
+// VM, proving the gate routes to a byte-identical engine. Each pattern is run on a
+// no-match and a match-after-the-multibyte-prefix haystack so both the exhaust and
+// the deep-match arms of the simulation run.
+func TestCachedDFAMultibyteGate(t *testing.T) {
+	// A long multi-byte run (mixed Greek code points, each a 2-byte sequence). It is
+	// well past fbGateWindow consumed positions, so the gate trips before any match.
+	mb := strings.Repeat("αβγδε", 30)
+	for _, pat := range []string{
+		`.x`,      // usePF=false: the rerun seed returns every position
+		`αx|βy`,   // usePF=true via a multi-byte first-byte set
+		`α+`,      // greedy multi-byte run: match then the threads drain
+		`[αβγδε]+`, // class over the whole multi-byte run
+	} {
+		prog := compileForDFA(t, pat)
+		dfa := forceDFA(prog)
+		if dfa == nil {
+			t.Fatalf("expected DFA for %q", pat)
+		}
+		for _, in := range []string{mb, mb + "αx", mb + "βy", "αx" + mb, mb + "x"} {
+			wb, we, wok := vmSpan(t, prog, in)
+			gb, ge, gok := dfa.Search(in, compile.UTF8, 0)
+			if gok != wok || (gok && (gb != wb || ge != we)) {
+				t.Errorf("pattern %q input %q: DFA=(%d,%d,%v) VM=(%d,%d,%v)",
+					pat, in, gb, ge, gok, wb, we, wok)
+			}
 		}
 	}
 }

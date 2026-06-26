@@ -235,15 +235,47 @@ func (s *dfaCacheSim) fallbackStep(st *dfaCacheState, begins []int32, sp int, hu
 	return next, nextBegins, matchHere, matchBegin, width
 }
 
+// fbGateWindow / fbGateMin set the adaptive fallback-dominance gate. Over the first
+// fbGateWindow consumed positions the scan counts how many took the per-step fallback
+// (a multi-byte UTF-8 lead byte, or an assertion-crossing closure the byte-keyed table
+// cannot express); if at least fbGateMin of them did, it abandons the cached path
+// (returns useSim=true) and DFA.Search reruns the whole search on the per-step NFA
+// simulation. A fallback interns a DFA state per position (an allocation), so when the
+// fallbacks dominate the cached table is not paying for itself and the simulation —
+// which handles every position uniformly with no per-position interning and runs
+// allocation-free — is the faster engine. This catches both regression classes the
+// cached DFA would otherwise lose on versus the bare simulation: a multi-byte-heavy
+// UTF-8 haystack (e.g. `.x` over mixed CJK/Greek/Latin, which falls back at roughly
+// every other position), and an assertion-driven state churn (e.g. the `\A`-anchored
+// ReDoS patterns, which fall back at essentially every position).
+//
+// The window is short so the abandoned work is negligible (a fixed handful of interns
+// before the bail), and only consumed positions count, so a long prefilter skip over
+// dead input does not trip it. The threshold is 3/8 of the window — comfortably above
+// the near-zero fallback rate of an ASCII-dominated scan (a literal/class/anchor run
+// over ASCII never falls back, and the odd interior `\b`/`^` is sparse), and
+// comfortably below the ~50–100% rate of the multi-byte and assertion-churn cases — so
+// the two regimes are separated with wide margin and an ASCII-winning pattern is never
+// misrouted off the cached path.
+const (
+	fbGateWindow = 16
+	fbGateMin    = fbGateWindow * 3 / 8
+)
+
 // searchCached is the cached-DFA forward scan. It returns the leftmost-first match's
 // [begin, end) byte span and whether any match was found, identical to dfaSim.search
 // but driving the memoized transition table for width-1 ASCII positions. anchored
-// restricts the scan to start offset 0.
-func (s *dfaCacheSim) searchCached(anchored bool) (int, int, bool) {
+// restricts the scan to start offset 0. It returns useSim=true (with the span fields
+// unset) when it detects, within the first fbGateWindow consumed positions, that the
+// per-step fallback dominates and the simulation would be faster; the caller then
+// reruns the search on the simulation.
+func (s *dfaCacheSim) searchCached(anchored bool) (begin, end int, found, useSim bool) {
 	sim := s.sim
 	c := s.c
 	input := sim.ctx.input
 	matchBegin, matchEnd := -1, -1
+	// Adaptive gate state: positions consumed so far and how many took the fallback.
+	consumed, fellBack := 0, 0
 
 	// seed mirrors dfaSim.search's prefilter-driven start locator.
 	seed := func(at int) int {
@@ -273,7 +305,7 @@ func (s *dfaCacheSim) searchCached(anchored bool) (int, int, bool) {
 
 	sp := seed(0)
 	if sp < 0 {
-		return -1, -1, false
+		return -1, -1, false, false
 	}
 	st, fresh, matchHere, mBegin := s.closeFrontier(nil, sp, true)
 	begins := adopt(fresh)
@@ -282,6 +314,20 @@ func (s *dfaCacheSim) searchCached(anchored bool) (int, int, bool) {
 	}
 
 	for {
+		// Adaptive fallback-dominance gate. Once the opening window of consumed positions
+		// is full, if at least fbGateMin of them took the per-step fallback the cached
+		// table is not paying for itself (each fallback interns a DFA state — an
+		// allocation), so the per-step simulation — which pays no per-position interning
+		// and runs allocation-free — is the faster engine. Abandon the cached path (the
+		// caller reruns the whole search on the simulation). Evaluated here, at the loop
+		// top, so it fires regardless of which path filled the final window slot. It is
+		// gated on matchBegin < 0 because once a match begin is fixed the remaining scan is
+		// bounded and a switch would not pay off; the counters are frozen once the window
+		// fills (below), so this equality is a one-shot at the boundary, never a recurring
+		// per-position cost afterwards.
+		if matchBegin < 0 && consumed == fbGateWindow && fellBack >= fbGateMin {
+			return 0, 0, false, true
+		}
 		// No surviving consuming thread: finish (if a match is fixed) or jump the cursor
 		// to the next viable start and re-seed, mirroring dfaSim.search's clist-empty arm.
 		if len(st.nodes) == 0 {
@@ -345,12 +391,21 @@ func (s *dfaCacheSim) searchCached(anchored bool) (int, int, bool) {
 				cur, spare = nextBegins, cur
 				st, begins = next, nextBegins
 				sp++
+				if consumed < fbGateWindow {
+					consumed++ // a cached (width-1) step: counts toward the gate window
+				}
 				continue
 			}
 		}
 
 		// Fallback for this one position: a multi-byte UTF-8 lead byte, or an
-		// uncacheable (assertion-crossing) transition. Resume cached afterwards.
+		// uncacheable (assertion-crossing) transition. Resume cached afterwards. Both
+		// counters feed the adaptive gate evaluated at the loop top; they freeze once the
+		// window fills so the gate is a one-shot at the boundary.
+		if consumed < fbGateWindow {
+			consumed++
+			fellBack++
+		}
 		next, fresh, fMatch, fBegin, w := s.fallbackStep(st, begins, sp, hunting)
 		begins = adopt(fresh)
 		if fMatch {
@@ -361,7 +416,7 @@ func (s *dfaCacheSim) searchCached(anchored bool) (int, int, bool) {
 	}
 
 	if matchBegin < 0 {
-		return -1, -1, false
+		return -1, -1, false, false
 	}
-	return matchBegin, matchEnd, true
+	return matchBegin, matchEnd, true, false
 }

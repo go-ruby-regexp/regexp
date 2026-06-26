@@ -180,6 +180,134 @@ func (d *dfaSim) advanceWidth(sp int) int {
 	return w
 }
 
+// search is the leftmost-first NFA simulation: a per-step Pike-VM scan that
+// recomputes each position's frontier from the live thread list. It is the
+// multi-byte-path engine — the cached DFA in dfa_cache_run.go falls back to one of
+// these per-step transitions for every multi-byte UTF-8 position, and a haystack
+// that is mostly multi-byte would fall back at almost every position (paying a
+// state-intern per position), so the cached driver detects that case and runs the
+// whole search here instead, where every position is handled uniformly with no
+// per-position interning or allocation. It produces the identical leftmost-first
+// [begin, end) span the cached driver (and the backtracking VM) produces.
+// anchored restricts the scan to start offset 0.
+func (d *dfaSim) search(anchored bool) (int, int, bool) {
+	input := d.ctx.input
+	matchBegin, matchEnd := -1, -1
+
+	// seed locates the next position at or after `at` where a fresh start thread
+	// should be planted, using the prefilter to skip provably-dead input (a literal
+	// prefix located by strings.Index, a constrained first byte, or a \A anchor). It
+	// returns -1 when no further start can match, so the caller can stop the scan
+	// rather than grind to end-of-input. When the prefilter is unusable it returns
+	// `at` unchanged (every position is a candidate).
+	seed := func(at int) int {
+		if anchored {
+			if at == 0 {
+				return 0
+			}
+			return -1
+		}
+		if d.usePF {
+			return d.pf.nextStart(input, at)
+		}
+		return at
+	}
+
+	// Plant the first start thread at the first viable position. If the prefilter
+	// can already prove no start is viable, the search is over.
+	sp := seed(0)
+	if sp < 0 {
+		return -1, -1, false
+	}
+	d.th.bump()
+	d.th.clist = d.th.clist[:0]
+	d.add(&d.th.clist, int32(d.nfa.start), int32(sp), sp)
+
+	for {
+		// A match is fixed once no higher-priority (earlier-listed) thread survives to
+		// possibly extend it: clist empty after a match means done.
+		if len(d.th.clist) == 0 {
+			if matchBegin >= 0 {
+				break
+			}
+			// No live thread and no match yet: jump the cursor to the next viable start
+			// (prefilter-driven) rather than stepping dead bytes one at a time.
+			ns := seed(sp)
+			if ns < 0 {
+				break
+			}
+			sp = ns
+			d.th.bump()
+			d.add(&d.th.clist, int32(d.nfa.start), int32(sp), sp)
+			if len(d.th.clist) == 0 {
+				// The start closure produced no waiting thread (e.g. an unsatisfiable
+				// leading assertion at this position). Advance and retry; guard against a
+				// non-advancing seed by stepping at least one position.
+				if sp >= len(input) {
+					break
+				}
+				// advanceWidth returns the exact width of the code point at sp (sp is
+				// strictly inside the input here), so the cursor lands on the next
+				// boundary, never past end of input.
+				sp += d.advanceWidth(sp)
+				continue
+			}
+		}
+
+		d.th.bump()
+		d.th.nlist = d.th.nlist[:0]
+		stepWidth := 0
+		for i := 0; i < len(d.th.clist); i++ {
+			t := d.th.clist[i]
+			n := d.nfa.insts[t.node]
+			if n.op == nfaMatch {
+				matchBegin, matchEnd = int(t.begin), sp
+				break // lower-priority threads cannot win
+			}
+			if sp >= len(input) {
+				continue // nothing to consume at end of input
+			}
+			ok, w := d.atomStep(n.inst, sp)
+			if ok {
+				// The successor's closure is evaluated at the NEXT position (sp+w) so
+				// assertions there see the right context.
+				d.add(&d.th.nlist, int32(n.x), t.begin, sp+w)
+				stepWidth = w
+			}
+		}
+
+		if sp >= len(input) {
+			break
+		}
+		if stepWidth == 0 {
+			// No thread consumed at this position. Swap in the (now empty) nlist; the
+			// loop top finishes the search (if a match is already fixed) or prefilter
+			// -jumps to the next viable start. When still hunting, advance the cursor
+			// past this position first. advanceWidth is exact (sp is inside the input,
+			// the sp>=len case broke above), so the cursor never overshoots end of input.
+			d.th.clist, d.th.nlist = d.th.nlist, d.th.clist
+			if matchBegin < 0 {
+				sp += d.advanceWidth(sp)
+			}
+			continue
+		}
+		// Seed a new start thread for the next position (lowest priority) unless a
+		// match is found or we are anchored. The prefilter is not consulted here: once
+		// any thread is live the scan must visit every following position to honour a
+		// thread already in progress, and seeding each is cheap (dedup'd by the
+		// visited set).
+		if matchBegin < 0 && !anchored {
+			d.add(&d.th.nlist, int32(d.nfa.start), int32(sp+stepWidth), sp+stepWidth)
+		}
+		d.th.clist, d.th.nlist = d.th.nlist, d.th.clist
+		sp += stepWidth
+	}
+	if matchBegin < 0 {
+		return -1, -1, false
+	}
+	return matchBegin, matchEnd, true
+}
+
 // --- context-form atom acceptance tests ---------------------------------- //
 // These mirror the machine.*Step methods exactly but take a read-only dfaCtx so
 // both the DFA executor and (unchanged) the backtracking VM can share the logic.
