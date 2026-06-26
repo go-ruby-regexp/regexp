@@ -207,7 +207,17 @@ func (s *dfaCacheSim) closeFrontier(seeds []dfaThread, sp int, seedStart bool) (
 // context), seeding a fresh start at the landing position when hunting, and returns
 // the resulting cached state at sp+w plus that width. It is the per-step simulation
 // confined to a single position; the driver resumes the cached path afterwards.
-func (s *dfaCacheSim) fallbackStep(st *dfaCacheState, begins []int32, sp int, hunting bool) (next *dfaCacheState, nextBegins []int32, matchHere bool, matchBegin int32, width int) {
+//
+// mixedWidth is set when two consuming threads alive at sp accept DIFFERENT byte
+// widths (e.g. `γ.` on "γγ": at the second γ the dot consumes the 2-byte rune while
+// a freshly re-seeded byte-literal start consumes 1 byte). The cached driver advances
+// a single shared cursor by one width per step and has no per-node landing offset, so
+// it cannot honour two successors that land at different offsets — it would truncate
+// the wider one by a byte. When that happens the step is not representable on the
+// cached path; the caller abandons it and reruns the whole search on the per-step
+// simulation (dfaSim.search), which carries each thread's own landing offset and
+// advances the cursor to the minimum, producing the correct leftmost-first span.
+func (s *dfaCacheSim) fallbackStep(st *dfaCacheState, begins []int32, sp int, hunting bool) (next *dfaCacheState, nextBegins []int32, matchHere bool, matchBegin int32, width int, mixedWidth bool) {
 	sim := s.sim
 	seeds := s.fbSeeds[:0]
 	stepWidth := 0
@@ -215,6 +225,13 @@ func (s *dfaCacheSim) fallbackStep(st *dfaCacheState, begins []int32, sp int, hu
 		ok, w := sim.atomStep(sim.nfa.insts[node].inst, sp)
 		if !ok {
 			continue
+		}
+		if stepWidth != 0 && w != stepWidth {
+			// Two surviving consuming threads accept different widths at this position.
+			// The cached driver's single-cursor model cannot represent successors landing
+			// at distinct offsets; signal the caller to rerun on the per-step simulation.
+			s.fbSeeds = seeds
+			return nil, nil, false, -1, 0, true
 		}
 		seeds = append(seeds, dfaThread{node: int32(sim.nfa.insts[node].x), begin: begins[i]})
 		stepWidth = w
@@ -226,13 +243,13 @@ func (s *dfaCacheSim) fallbackStep(st *dfaCacheState, begins []int32, sp int, hu
 		// the simulation's stepWidth==0 arm advances the cursor by one code point.
 		width = sim.advanceWidth(sp)
 		next, nextBegins, matchHere, matchBegin = s.closeFrontier(nil, sp+width, hunting)
-		return next, nextBegins, matchHere, matchBegin, width
+		return next, nextBegins, matchHere, matchBegin, width, false
 	}
 	width = stepWidth
 	// Close the successors at the landing position; seed a fresh start there too when
 	// still hunting (the simulation seeds the next start at sp+stepWidth).
 	next, nextBegins, matchHere, matchBegin = s.closeFrontier(seeds, sp+width, hunting)
-	return next, nextBegins, matchHere, matchBegin, width
+	return next, nextBegins, matchHere, matchBegin, width, false
 }
 
 // fbGateWindow / fbGateMin set the adaptive fallback-dominance gate. Over the first
@@ -406,7 +423,15 @@ func (s *dfaCacheSim) searchCached(anchored bool) (begin, end int, found, useSim
 			consumed++
 			fellBack++
 		}
-		next, fresh, fMatch, fBegin, w := s.fallbackStep(st, begins, sp, hunting)
+		next, fresh, fMatch, fBegin, w, mixedWidth := s.fallbackStep(st, begins, sp, hunting)
+		if mixedWidth {
+			// A fallback position has two surviving consuming threads of different byte
+			// widths — unrepresentable on the single-cursor cached path. Rerun the whole
+			// search on the per-step simulation, which carries each thread's own landing
+			// offset and advances to the minimum. The result is the correct leftmost-first
+			// span; the simulation is linear, so ReDoS bounds are preserved.
+			return 0, 0, false, true
+		}
 		begins = adopt(fresh)
 		if fMatch {
 			matchBegin, matchEnd = int(fBegin), sp+w

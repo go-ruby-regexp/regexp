@@ -447,24 +447,46 @@ var diffUnicodeCorpus = []rubyCase{
 	// non-ASCII range is a code-point range, exactly as MRI treats them on a
 	// UTF-8 string. Compared by substring because the offsets differ in
 	// representation (characters vs bytes) but the matched text is identical.
-	{`[é]`, "héllo"},                    // single multi-byte member
-	{`[é]`, "abc"},                      // no match
-	{`[^é]+`, "héllo"},                  // negated: every char but é, whole code points
-	{`[é]`, "naïve"},                    // no match (ï is not é)
-	{`[à-ï]+`, "çàèé z"},                // multi-byte code-point range
-	{`[à-ï]`, "ABC"},                    // no match
-	{`[αβγ]+`, "βγαδ"},                  // enumerated Greek members
-	{`[α-ω]+`, "λμνΑ"},                  // Greek range (uppercase Α excluded)
-	{`[a-zé]+`, "abcéZ"},                // mixed ASCII range plus a multi-byte member
-	{`[a-zé]`, "Z"},                     // no match (uppercase, and not é)
-	{`[a-é]+`, "azé!"},                  // range spanning ASCII into the multi-byte space
-	{`[a-é]`, "à"},                      // à (U+00E0) falls inside a..é (U+0061..U+00E9)
-	{`[-é]+`, "-é-x"},                   // leading dash literal plus a multi-byte member
-	{`[é-]+`, "é--x"},                   // trailing dash literal
-	{`[é\d]+`, "é4é2x"},                 // multi-byte member combined with a class escape
-	{`[é\p{L}]+`, "éZ9"},                // multi-byte member combined with a property
-	{`[中文]+`, "中文字"},                   // CJK members (3-byte code points)
-	{`(\p{Lu})([a-zé]+)`, "Hé"},         // capture interplay with a mixed class
+	{`[é]`, "héllo"},            // single multi-byte member
+	{`[é]`, "abc"},              // no match
+	{`[^é]+`, "héllo"},          // negated: every char but é, whole code points
+	{`[é]`, "naïve"},            // no match (ï is not é)
+	{`[à-ï]+`, "çàèé z"},        // multi-byte code-point range
+	{`[à-ï]`, "ABC"},            // no match
+	{`[αβγ]+`, "βγαδ"},          // enumerated Greek members
+	{`[α-ω]+`, "λμνΑ"},          // Greek range (uppercase Α excluded)
+	{`[a-zé]+`, "abcéZ"},        // mixed ASCII range plus a multi-byte member
+	{`[a-zé]`, "Z"},             // no match (uppercase, and not é)
+	{`[a-é]+`, "azé!"},          // range spanning ASCII into the multi-byte space
+	{`[a-é]`, "à"},              // à (U+00E0) falls inside a..é (U+0061..U+00E9)
+	{`[-é]+`, "-é-x"},           // leading dash literal plus a multi-byte member
+	{`[é-]+`, "é--x"},           // trailing dash literal
+	{`[é\d]+`, "é4é2x"},         // multi-byte member combined with a class escape
+	{`[é\p{L}]+`, "éZ9"},        // multi-byte member combined with a property
+	{`[中文]+`, "中文字"},            // CJK members (3-byte code points)
+	{`(\p{Lu})([a-zé]+)`, "Hé"}, // capture interplay with a mixed class
+
+	// Regression: an alternation arm beginning with a multi-byte UTF-8 literal
+	// followed by a variable-width atom (the rune-aware dot), optionally guarded by
+	// the multiline `^` anchor. The cached-DFA driver re-seeds a fresh byte-literal
+	// start at every position; at a position where both the in-progress dot (which
+	// consumes a whole 2-byte code point) and the freshly seeded start (which
+	// consumes one byte) are alive, the two successors land at DIFFERENT offsets.
+	// The single-cursor cached driver formerly collapsed them to one width and
+	// truncated the dot's match by a byte (e.g. "γγ" → 0,3 instead of 0,4). The fix
+	// routes such mixed-width fallback positions to the per-step simulation, which
+	// carries each thread's own landing offset. All three engines (backtracking VM,
+	// per-step simulation, cached DFA) must now agree with MRI/Onigmo. (Compared by
+	// substring: byte vs character offsets differ only by representation.)
+	{`(?m)^x|γ.`, "γγ"},    // the reported pattern: multiline anchor × multibyte arm
+	{`(?m)^x|γ.`, "γδ"},    // same, different following rune
+	{`(?m)^x|γ.`, "x\nγγ"}, // anchored arm reachable after a newline; γ. still wins at 0
+	{`γ.|x`, "γγ"},         // alternation, multibyte arm first, no anchor
+	{`a|γ.`, "γδ"},         // alternation, multibyte arm second
+	{`γ.`, "γγ"},           // the bare multibyte-literal-then-dot, no alternation
+	{`γ.`, "γδ"},           // bare form, distinct following rune
+	{`xγ.|y`, "xγγz"},      // single-byte literal, then multibyte-literal-then-dot arm
+	{`α.|β`, "αβγ"},        // dot spans the following multibyte rune after a multibyte literal
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

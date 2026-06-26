@@ -374,6 +374,44 @@ func TestDFASimSeedArms(t *testing.T) {
 	}
 }
 
+// TestDFAMixedWidthFallback pins the multi-byte mixed-width regression: when two
+// consuming threads alive at the same offset accept different byte widths — the
+// rune-aware dot consuming a whole 2-byte code point while a freshly re-seeded
+// byte-literal start consumes one byte (e.g. `γ.` on "γγ") — the cached-DFA driver's
+// single-cursor model cannot land both successors at their own offset. It formerly
+// collapsed them to one width and truncated the dot's match by a byte (0,3 instead
+// of 0,4); the fix routes such fallback positions to the per-step simulation. This
+// asserts the cached DFA agrees byte-for-byte with the backtracking VM (the oracle)
+// for these patterns on every arch — it does not depend on a target-arch ruby, so it
+// runs under qemu where the differential test is skipped.
+func TestDFAMixedWidthFallback(t *testing.T) {
+	cases := []struct{ pat, in string }{
+		{`γ.`, "γγ"},           // bare multibyte-literal-then-dot
+		{`γ.`, "γδ"},           // distinct following rune
+		{`γ.|x`, "γγ"},         // alternation, multibyte arm first
+		{`a|γ.`, "γδ"},         // alternation, multibyte arm second
+		{`(?m)^x|γ.`, "γγ"},    // the reported pattern: multiline anchor × multibyte arm
+		{`(?m)^x|γ.`, "γδ"},    //
+		{`(?m)^x|γ.`, "x\nγγ"}, // anchored arm reachable after a newline
+		{`α.|β`, "αβγ"},        // dot spans the following multibyte rune
+		{`xγ.|y`, "xγγz"},      // single-byte literal then multibyte arm
+		{`γ.δ.`, "γαδβ"},       // two multibyte-then-dot pairs in sequence
+	}
+	for _, c := range cases {
+		prog := compileForDFA(t, c.pat)
+		dfa := forceDFA(prog)
+		if dfa == nil {
+			t.Fatalf("pattern %q unexpectedly outside the DFA subset", c.pat)
+		}
+		wb, we, wok := vmSpan(t, prog, c.in)
+		gb, ge, gok := dfa.Search(c.in, compile.UTF8, 0)
+		if gok != wok || (gok && (gb != wb || ge != we)) {
+			t.Errorf("pattern %q input %q: DFA=(%d,%d,%v) VM=(%d,%d,%v)",
+				c.pat, c.in, gb, ge, gok, wb, we, wok)
+		}
+	}
+}
+
 func ExampleDFA() {
 	res, _ := syntax.ParseEnc(`[a-z]+`, syntax.UTF8)
 	prog := compile.CompileEnc(res, compile.UTF8)

@@ -16,12 +16,26 @@ import (
 // the leftmost-match bounds the backtracker is then anchored to for submatch
 // extraction.
 
-// dfaThread is one live NFA thread: the node it sits on and the input offset its
+// dfaThread is one live NFA thread: the node it sits on, the input offset its
 // match began at (so a completed match reports the right begin for the unanchored
-// scan). Threads are held in a priority-ordered list; earlier means preferred.
+// scan), and the absolute input offset `at` at which the thread is positioned —
+// i.e. where its consuming node will read next. Threads are held in a priority
+// -ordered list; earlier means preferred.
+//
+// `at` exists because this engine's consuming atoms have VARIABLE byte width: a
+// byte-oriented OpChar always advances one byte, but a rune-aware atom (the dot
+// OpAny, OpFoldChar, a rune-aware OpClass, OpUniProp) advances a whole UTF-8 code
+// point — 1 to 4 bytes. Two threads alive at the same code-point boundary can
+// therefore consume DIFFERENT widths (e.g. `a|γ.` on "γγ": the dot consumes the
+// 2-byte γ while a freshly-seeded byte-literal start consumes 1 byte), so their
+// successors land at different offsets and a single shared step width is wrong
+// (it truncated the dot's span by a byte). The executor instead advances the
+// cursor to the MINIMUM successor offset each step and carries any thread that
+// landed further ahead untouched until the cursor reaches it.
 type dfaThread struct {
 	node  int32
 	begin int32
+	at    int32
 }
 
 // dfaThreads is the reusable pair of priority-ordered thread lists (current and
@@ -77,7 +91,7 @@ func (d *dfaSim) add(dst *[]dfaThread, node int32, begin int32, sp int) {
 		for _, c := range d.nfa.closure[node] {
 			if d.th.visited[c] != d.th.gen {
 				d.th.visited[c] = d.th.gen
-				*dst = append(*dst, dfaThread{node: c, begin: begin})
+				*dst = append(*dst, dfaThread{node: c, begin: begin, at: int32(sp)})
 			}
 		}
 		return
@@ -256,9 +270,29 @@ func (d *dfaSim) search(anchored bool) (int, int, bool) {
 
 		d.th.bump()
 		d.th.nlist = d.th.nlist[:0]
-		stepWidth := 0
+		// nextSP is the smallest landing offset any surviving successor (or carried
+		// thread) wants the cursor to advance to. Because consuming atoms have variable
+		// width, threads alive at sp can produce successors at sp+1 … sp+4; the cursor
+		// must advance to the MINIMUM of those so a thread that landed further ahead is
+		// re-examined at its own offset rather than read a byte early. -1 means "no
+		// successor yet".
+		nextSP := -1
+		advance := func(to int) {
+			if nextSP < 0 || to < nextSP {
+				nextSP = to
+			}
+		}
+		consumed := false
 		for i := 0; i < len(d.th.clist); i++ {
 			t := d.th.clist[i]
+			// A thread positioned ahead of the cursor is not active yet: carry it forward
+			// untouched and let it advance the target so the cursor reaches it. Its node
+			// is preserved in priority order in nlist.
+			if int(t.at) > sp {
+				d.th.nlist = append(d.th.nlist, t)
+				advance(int(t.at))
+				continue
+			}
 			n := d.nfa.insts[t.node]
 			if n.op == nfaMatch {
 				matchBegin, matchEnd = int(t.begin), sp
@@ -269,38 +303,45 @@ func (d *dfaSim) search(anchored bool) (int, int, bool) {
 			}
 			ok, w := d.atomStep(n.inst, sp)
 			if ok {
-				// The successor's closure is evaluated at the NEXT position (sp+w) so
-				// assertions there see the right context.
+				// The successor's closure is evaluated at its OWN landing position (sp+w) so
+				// assertions there see the right context and its `at` is recorded for the
+				// min-offset advance.
 				d.add(&d.th.nlist, int32(n.x), t.begin, sp+w)
-				stepWidth = w
+				advance(sp + w)
+				consumed = true
 			}
 		}
 
 		if sp >= len(input) {
 			break
 		}
-		if stepWidth == 0 {
-			// No thread consumed at this position. Swap in the (now empty) nlist; the
-			// loop top finishes the search (if a match is already fixed) or prefilter
-			// -jumps to the next viable start. When still hunting, advance the cursor
-			// past this position first. advanceWidth is exact (sp is inside the input,
-			// the sp>=len case broke above), so the cursor never overshoots end of input.
+		if !consumed && nextSP < 0 {
+			// No thread consumed at this position and none was carried ahead. Swap in the
+			// (now empty) nlist; the loop top finishes the search (if a match is already
+			// fixed) or prefilter-jumps to the next viable start. When still hunting,
+			// advance the cursor past this position first. advanceWidth is exact (sp is
+			// inside the input, the sp>=len case broke above), so the cursor never
+			// overshoots end of input.
 			d.th.clist, d.th.nlist = d.th.nlist, d.th.clist
 			if matchBegin < 0 {
 				sp += d.advanceWidth(sp)
 			}
 			continue
 		}
-		// Seed a new start thread for the next position (lowest priority) unless a
-		// match is found or we are anchored. The prefilter is not consulted here: once
-		// any thread is live the scan must visit every following position to honour a
-		// thread already in progress, and seeding each is cheap (dedup'd by the
-		// visited set).
+		// Advance the cursor to the nearest successor/carried offset. A carried thread
+		// (at > old sp) may pin nextSP without any consumption this step, so nextSP is
+		// always set here (consumed || a carry advanced it).
+		newSP := nextSP
+		// Seed a new start thread for the next position (lowest priority) unless a match
+		// is found or we are anchored. It begins at the new cursor; the prefilter is not
+		// consulted here: once any thread is live the scan must visit every following
+		// position to honour a thread already in progress, and seeding each is cheap
+		// (dedup'd by the visited set).
 		if matchBegin < 0 && !anchored {
-			d.add(&d.th.nlist, int32(d.nfa.start), int32(sp+stepWidth), sp+stepWidth)
+			d.add(&d.th.nlist, int32(d.nfa.start), int32(newSP), newSP)
 		}
 		d.th.clist, d.th.nlist = d.th.nlist, d.th.clist
-		sp += stepWidth
+		sp = newSP
 	}
 	if matchBegin < 0 {
 		return -1, -1, false
