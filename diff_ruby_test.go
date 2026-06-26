@@ -487,6 +487,29 @@ var diffUnicodeCorpus = []rubyCase{
 	{`γ.`, "γδ"},           // bare form, distinct following rune
 	{`xγ.|y`, "xγγz"},      // single-byte literal, then multibyte-literal-then-dot arm
 	{`α.|β`, "αβγ"},        // dot spans the following multibyte rune after a multibyte literal
+
+	// Regression: a quantifier directly over a MULTI-BYTE literal must repeat the
+	// WHOLE code point, not just its trailing UTF-8 byte. A multi-byte literal had
+	// been lowered to one byte literal per UTF-8 byte, so /δ+/ bound the + to δ's
+	// second byte (0xB4) alone — δ+γ. on "δδδγγ" wrongly started at byte 4 (the last
+	// δ) instead of 0. The fix surfaces a multi-byte literal as a single atom so the
+	// quantifier wraps the entire code point, and the leftmost search then begins at
+	// offset 0 exactly as MRI/Onigmo do. Compared by matched substring (byte vs
+	// character offsets differ only by representation).
+	{`δ+γ.`, "δδδγγ"},     // the reported case: greedy + over a 2-byte literal
+	{`δ+γ.`, "δγ"},        // minimal: one δ then γ + one more code point
+	{`δ*γ.`, "δδδγγ"},     // greedy * over a multi-byte literal
+	{`δ*γ.`, "γγ"},        // * matches zero δ, leftmost start at 0
+	{`δ{2,}γ.`, "δδδγγ"},  // bounded-below {n,} over a multi-byte literal
+	{`δ{2}γ.`, "δδγγ"},    // exact {n} over a multi-byte literal
+	{`δ+?γ.`, "δδδγγ"},    // lazy +? over a multi-byte literal
+	{`δ??γ`, "δγ"},        // lazy ?? over a multi-byte literal
+	{`(δ+)γ.`, "δδδγγ"},   // captured greedy run of a multi-byte literal
+	{`中+文`, "中中中文"},       // greedy + over a 3-byte CJK literal
+	{`中*文`, "文x"},         // * matches zero 3-byte literals, leftmost start at 0
+	{`中{2,}`, "中中中x"},     // {n,} over a 3-byte literal
+	{`αβ+γ`, "αββββγ"},    // + binds only to the immediately preceding multi-byte literal
+	{`(?i)δ+γ.`, "δδδγγ"}, // folded multi-byte literal under a quantifier (already correct; guards the fold path)
 }
 
 // runRuby returns Ruby's span report for one case: begin0,end0 then each

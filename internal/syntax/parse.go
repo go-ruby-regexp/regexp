@@ -478,31 +478,41 @@ func (p *parser) parseAtom() (ast.Node, error) {
 // if that code point has a non-trivial simple-case-folding orbit (every ASCII
 // letter, and many non-ASCII letters), emits a rune-aware FoldLiteral so that a
 // Unicode case partner matches too — e.g. /É/i matches "é" and /k/i matches the
-// Kelvin sign. A code point with no fold partner (an ASCII non-letter, or a
-// letter Unicode does not case-fold) needs no rune awareness, so its leading byte
-// is emitted as a plain byte Literal exactly as before; the remaining
-// continuation bytes (if any) are consumed as their own byte literals on later
-// iterations, which is byte-identical to the input. Outside /i, every character is
-// a byte Literal, keeping the engine byte-oriented.
+// Kelvin sign.
+//
+// Every other literal is byte-oriented, keeping the engine byte-oriented: a single
+// byte (ASCII, or an invalid/opaque byte) is a plain Literal. A MULTI-BYTE code
+// point with no case-folding need (outside /i, or a code point Unicode does not
+// fold) is consumed as ONE atom — a Concat of its UTF-8 byte literals — rather
+// than one byte literal per parser iteration. Emitting it as a single atom is
+// byte-identical when unquantified, but it is essential under a quantifier: /δ+/
+// must repeat the whole two-byte δ, not just δ's trailing byte. parseTerm attaches
+// a following quantifier to whatever atom parseAtom returns, so a multi-byte
+// literal must surface as one node or the quantifier would bind only its last byte.
 func (p *parser) parseLiteralRune() ast.Node {
-	if !p.flags.fold {
-		return &ast.Literal{B: p.next()}
-	}
 	r, size := utf8.DecodeRuneInString(p.src[p.pos:])
 	if r == utf8.RuneError && size <= 1 {
 		// An invalid UTF-8 lead byte (or a lone byte) cannot be a foldable code
 		// point; treat it as a single opaque byte, matching the byte-oriented core.
 		return &ast.Literal{B: p.next()}
 	}
-	if unicode.SimpleFold(r) == r {
-		// No case partner (an ASCII non-letter, or a letter Unicode does not fold):
-		// rune-awareness would add nothing, so emit the leading byte as a plain
-		// literal and let any continuation bytes follow on later iterations — which
-		// is byte-identical to matching the whole code point.
+	if p.flags.fold && unicode.SimpleFold(r) != r {
+		// /i and the code point has a case partner: a rune-aware FoldLiteral so a
+		// Unicode case partner matches too.
+		p.pos += size
+		return &ast.FoldLiteral{R: r}
+	}
+	if size == 1 {
+		// A single-byte literal needs no grouping; emit it directly as before.
 		return &ast.Literal{B: p.next()}
 	}
-	p.pos += size
-	return &ast.FoldLiteral{R: r}
+	// A multi-byte code point that does not (need to) fold: bind its UTF-8 bytes
+	// into one atom so a trailing quantifier repeats the whole code point.
+	subs := make([]ast.Node, size)
+	for i := 0; i < size; i++ {
+		subs[i] = &ast.Literal{B: p.next()}
+	}
+	return &ast.Concat{Subs: subs}
 }
 
 // parseGroup parses a capturing group (...), a non-capturing group (?:...), or

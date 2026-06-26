@@ -39,6 +39,7 @@ var dfaInputs = []string{
 	"hello world", "HELLO", "Hello123World", "  spaces  ",
 	"123", "12345", "x12345y", "no digits here",
 	"café", "naïve", "αβγ", "Ωμέγα", "é", "aébc",
+	"δδδγγ", "δγ", "γγ", "δδγγ", "中中中文", "文x", "αββββγ",
 	"foo@bar.com", "user.name+tag@example.co.uk", "not an email",
 	"https://example.com/path", "http://a.b/c", "ftp://x",
 	"line1\nline2\nline3", "\n\n", "trailing\n",
@@ -62,6 +63,10 @@ var dfaPatterns = []string{
 	`(a|b)*c`, `(ab)+`, `(foo|bar)+`, `x(y|z)?w`,
 	`\Aa*b`, `\A(a*)*b`, `\A(a|aa)+b`, `(ab|a)*`, `a*a*a*b`,
 	`[abc]+|[def]+`, `\d+\.\d+`,
+	// A quantifier directly over a MULTI-BYTE literal: the + / * / {n,} must repeat
+	// the whole code point (δ is 2 bytes, 中 is 3), so the leftmost match begins at
+	// the first repetition, not mid-character. Regression for the δ+γ. wrong-span bug.
+	`δ+γ.`, `δ*γ.`, `δ{2,}γ.`, `δ{2}γ.`, `δ+?γ.`, `(δ+)γ.`, `中+文`, `中*文`, `αβ+γ`,
 }
 
 // forceDFA builds the DFA engine for a program regardless of the performance gate
@@ -99,6 +104,55 @@ func TestDFAMatchesVM(t *testing.T) {
 				t.Errorf("pattern %q input %q: DFA=(%d,%d,%v) VM=(%d,%d,%v)",
 					pat, in, gb, ge, gok, wb, we, wok)
 			}
+		}
+	}
+}
+
+// TestMultibyteQuantifierSpan pins the leftmost byte span for a quantifier applied
+// directly to a multi-byte literal and asserts all three engines agree. A
+// multi-byte literal was formerly lowered to one byte literal per UTF-8 byte, so a
+// trailing quantifier bound only the literal's last byte (e.g. /δ+/ became
+// 0xCE(0xB4)+); δ+γ. on "δδδγγ" then started at byte 4 (the last δ) rather than 0.
+// The literal is now one atom, so the quantifier repeats the whole code point and
+// the search begins at the leftmost position. Spans are byte offsets (δ=2 bytes,
+// 中=3); these match Ruby 4.0.5 / C Onigmo (which report the same spans in bytes).
+func TestMultibyteQuantifierSpan(t *testing.T) {
+	cases := []struct {
+		pat, input   string
+		wantB, wantE int
+		wantOK       bool
+	}{
+		{`δ+γ.`, "δδδγγ", 0, 10, true}, // the reported bug: was (4,10)
+		{`δ*γ.`, "δδδγγ", 0, 10, true},
+		{`δ*γ.`, "γγ", 0, 4, true}, // zero δ, leftmost start 0
+		{`δ{2,}γ.`, "δδδγγ", 0, 10, true},
+		{`δ{2}γ.`, "δδγγ", 0, 8, true},  // δδ (0..4) γ (4..6) . consumes γ (6..8)
+		{`δ+?γ.`, "δδδγγ", 0, 10, true}, // lazy still leftmost-first
+		{`δ+γ.`, "δγ", -1, -1, false},   // one δ then only one rune: γ. needs two
+		{`中+文`, "中中中文", 0, 12, true},    // 3-byte literal, greedy +
+		{`中*文`, "文x", 0, 3, true},       // zero 中
+		{`αβ+γ`, "αββββγ", 0, 12, true}, // + binds only to β, not αβ
+	}
+	for _, c := range cases {
+		prog := compileForDFA(t, c.pat)
+		// Backtracking VM.
+		vb, ve, vok := vmSpan(t, prog, c.input)
+		if vok != c.wantOK || (vok && (vb != c.wantB || ve != c.wantE)) {
+			t.Errorf("VM /%s/ on %q: got (%d,%d,%v), want (%d,%d,%v)",
+				c.pat, c.input, vb, ve, vok, c.wantB, c.wantE, c.wantOK)
+		}
+		// Cached / per-step NFA engine (DFA.Search internally uses the cached
+		// transition table and falls back to the per-step simulation at mixed-width
+		// positions, so this exercises both NFA executors).
+		dfa := forceDFA(prog)
+		if dfa == nil {
+			t.Errorf("/%s/: expected DFA-eligible program", c.pat)
+			continue
+		}
+		db, de, dok := dfa.Search(c.input, compile.UTF8, 0)
+		if dok != c.wantOK || (dok && (db != c.wantB || de != c.wantE)) {
+			t.Errorf("DFA /%s/ on %q: got (%d,%d,%v), want (%d,%d,%v)",
+				c.pat, c.input, db, de, dok, c.wantB, c.wantE, c.wantOK)
 		}
 	}
 }
