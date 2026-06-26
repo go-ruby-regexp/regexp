@@ -75,7 +75,7 @@ func forceDFA(prog *compile.Program) *DFA {
 		return nil
 	}
 	pf := analyze(prog)
-	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable()}
+	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc)}
 	n := len(nfa.insts)
 	d.pool.New = func() any { return newDFAThreads(n) }
 	return d
@@ -318,6 +318,59 @@ func TestDFAMatchThenThreadsDie(t *testing.T) {
 					pat, in, gb, ge, gok, wb, we, wok)
 			}
 		}
+	}
+}
+
+// newSimForTest builds a bare dfaSim over a compiled pattern so the per-step NFA
+// simulation (dfaSim.search) can be driven directly. The production DFA.Search only
+// reaches dfaSim.search through the cached driver's adaptive fallback gate, which
+// fires on multi-byte / assertion-churn input; that path never seeds at a position
+// the prefilter has already proven unviable, so a handful of the simulation's
+// general seed / re-seed arms are unreachable from there. They are correct, proven
+// (this engine is the search the cached driver borrows wholesale), defensive code,
+// so they are pinned here by invoking the simulation directly on the inputs that
+// exercise each arm.
+func newSimForTest(t *testing.T, pat, input string, gpos int) *dfaSim {
+	t.Helper()
+	prog := compileForDFA(t, pat)
+	nfa, ok := buildNFA(prog)
+	if !ok {
+		t.Fatalf("expected NFA for %q", pat)
+	}
+	pf := analyze(prog)
+	return &dfaSim{
+		nfa:   nfa,
+		th:    newDFAThreads(len(nfa.insts)),
+		ctx:   dfaCtx{input: input, enc: compile.UTF8, gpos: gpos},
+		pf:    pf,
+		usePF: pf.usable(),
+	}
+}
+
+// TestDFASimSeedArms drives the per-step simulation's seed / re-seed / drain arms
+// directly (see newSimForTest), each cross-checked against the backtracking VM.
+func TestDFASimSeedArms(t *testing.T) {
+	// seed(0) < 0: a usable literal-prefix prefilter proves no start is viable, so the
+	// simulation returns no-match before the scan loop.
+	if _, _, ok := newSimForTest(t, `abc`, "no a-b-c sequence here", 0).search(false); ok {
+		t.Error("seed(0)<0: expected no match when the required literal prefix is absent")
+	}
+	// Match fixed, then the higher-priority threads that outranked it die, leaving the
+	// thread list empty with a match already recorded so the loop top returns the
+	// leftmost-first span.
+	if b, e, ok := newSimForTest(t, `a+c|a+`, "aaab", 0).search(false); !ok || b != 0 || e != 3 {
+		t.Errorf("match-then-drain: got (%d,%d,%v), want (0,3,true)", b, e, ok)
+	}
+	// Re-seed whose start closure is empty (an unsatisfiable leading \G off the scan
+	// origin), so the cursor advances code point by code point and re-seeds.
+	if _, _, ok := newSimForTest(t, `\Gabc`, "xabc", 0).search(false); ok {
+		t.Error("empty-start-closure re-seed: \\Gabc must not match off the \\G origin")
+	}
+	// The same empty-start-closure walk, but with a no-prefilter pattern (the dot, so
+	// usePF is false) whose \G never holds, so the walk runs the cursor up to
+	// end-of-input and the loop breaks there.
+	if _, _, ok := newSimForTest(t, `\G.`, "ab", 5).search(false); ok {
+		t.Error("empty-start-closure-to-EOI: \\G. must not match when \\G never holds")
 	}
 }
 

@@ -139,24 +139,57 @@ type dfaSim struct {
 	usePF bool
 }
 
-// search runs the NFA over the input scanning start positions left to right and
-// returns the leftmost-first match's [begin, end) span and whether any match was
-// found. anchored restricts the scan to start offset 0 (a \A-anchored program, or
-// a forced-anchored bounds search): no later start is then seeded. It is a single
-// forward pass over the input with two priority-ordered thread lists, so it is
-// linear in the input length.
-//
-// At each position sp, clist holds the closed threads (sitting on a consuming or
-// accepting node) in priority order. A fresh start thread is seeded at the end of
-// clist (lowest priority, so any in-progress earlier-started match outranks it)
-// unless a match is already found or we are anchored past 0. The list is then
-// scanned in priority order: the first nfaMatch fixes a candidate [begin, sp) and
-// cuts off every lower-priority thread; each consuming thread whose atom matches at
-// sp contributes its successor's closure to nlist (at sp+width). A higher-priority
-// thread that has not yet matched keeps running, so a recorded match can still be
-// superseded by an earlier-listed thread that matches later — exactly leftmost
-// -first. The scan ends when clist empties (no thread can extend) or input is
-// exhausted.
+// atomStep applies the VM's exact per-atom acceptance test for a consuming atom at
+// position sp, returning whether it matches and the byte width it consumes. It
+// reuses the same logic the backtracking machine uses (foldCharStep / anyStep /
+// classStep / propStep / OpChar), so the DFA accepts exactly the bytes the VM
+// would.
+func (d *dfaSim) atomStep(in compile.Inst, sp int) (bool, int) {
+	switch in.Op {
+	case compile.OpFoldChar:
+		return foldCharStepCtx(d.ctx, in, sp)
+	case compile.OpAny:
+		return anyStepCtx(d.ctx, in, sp)
+	case compile.OpClass:
+		return classStepCtx(d.ctx, in, sp)
+	case compile.OpUniProp:
+		return propStepCtx(d.ctx, in, sp)
+	default:
+		// OpChar: a nfaChar node only ever carries one of the five consuming atom
+		// opcodes, and OpChar is the residual — match the single literal byte.
+		if sp < len(d.ctx.input) && d.ctx.input[sp] == in.B {
+			return true, 1
+		}
+		return false, 0
+	}
+}
+
+// advanceWidth returns how far the unanchored scan advances when no thread is live
+// at sp: one whole code point in UTF8 mode at a boundary, otherwise one byte. This
+// matches the backtracker's per-start scan, which also tries every byte offset;
+// advancing by a code point here only skips offsets that land inside a multi-byte
+// sequence, where no rune-aware atom can begin a match anyway, and a byte-oriented
+// atom in UTF8 mode also positions on code-point boundaries.
+// It is only ever called at a position strictly inside the input (the callers
+// break out at end of input first), so it always has a code point to measure.
+func (d *dfaSim) advanceWidth(sp int) int {
+	if d.ctx.enc == compile.ASCII8BIT {
+		return 1
+	}
+	_, w := utf8.DecodeRuneInString(d.ctx.input[sp:])
+	return w
+}
+
+// search is the leftmost-first NFA simulation: a per-step Pike-VM scan that
+// recomputes each position's frontier from the live thread list. It is the
+// multi-byte-path engine — the cached DFA in dfa_cache_run.go falls back to one of
+// these per-step transitions for every multi-byte UTF-8 position, and a haystack
+// that is mostly multi-byte would fall back at almost every position (paying a
+// state-intern per position), so the cached driver detects that case and runs the
+// whole search here instead, where every position is handled uniformly with no
+// per-position interning or allocation. It produces the identical leftmost-first
+// [begin, end) span the cached driver (and the backtracking VM) produces.
+// anchored restricts the scan to start offset 0.
 func (d *dfaSim) search(anchored bool) (int, int, bool) {
 	input := d.ctx.input
 	matchBegin, matchEnd := -1, -1
@@ -273,47 +306,6 @@ func (d *dfaSim) search(anchored bool) (int, int, bool) {
 		return -1, -1, false
 	}
 	return matchBegin, matchEnd, true
-}
-
-// atomStep applies the VM's exact per-atom acceptance test for a consuming atom at
-// position sp, returning whether it matches and the byte width it consumes. It
-// reuses the same logic the backtracking machine uses (foldCharStep / anyStep /
-// classStep / propStep / OpChar), so the DFA accepts exactly the bytes the VM
-// would.
-func (d *dfaSim) atomStep(in compile.Inst, sp int) (bool, int) {
-	switch in.Op {
-	case compile.OpFoldChar:
-		return foldCharStepCtx(d.ctx, in, sp)
-	case compile.OpAny:
-		return anyStepCtx(d.ctx, in, sp)
-	case compile.OpClass:
-		return classStepCtx(d.ctx, in, sp)
-	case compile.OpUniProp:
-		return propStepCtx(d.ctx, in, sp)
-	default:
-		// OpChar: a nfaChar node only ever carries one of the five consuming atom
-		// opcodes, and OpChar is the residual — match the single literal byte.
-		if sp < len(d.ctx.input) && d.ctx.input[sp] == in.B {
-			return true, 1
-		}
-		return false, 0
-	}
-}
-
-// advanceWidth returns how far the unanchored scan advances when no thread is live
-// at sp: one whole code point in UTF8 mode at a boundary, otherwise one byte. This
-// matches the backtracker's per-start scan, which also tries every byte offset;
-// advancing by a code point here only skips offsets that land inside a multi-byte
-// sequence, where no rune-aware atom can begin a match anyway, and a byte-oriented
-// atom in UTF8 mode also positions on code-point boundaries.
-// It is only ever called at a position strictly inside the input (the callers
-// break out at end of input first), so it always has a code point to measure.
-func (d *dfaSim) advanceWidth(sp int) int {
-	if d.ctx.enc == compile.ASCII8BIT {
-		return 1
-	}
-	_, w := utf8.DecodeRuneInString(d.ctx.input[sp:])
-	return w
 }
 
 // --- context-form atom acceptance tests ---------------------------------- //

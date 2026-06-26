@@ -1,5 +1,56 @@
 # Performance parity — go-ruby-regexp vs Onigmo (C) / Go regexp (2026-06-24)
 
+> **Cached lazy-DFA update (2026-06-26):** the last inner-loop lever — a **cached,
+> RE2-style lazy DFA** layered over the lazy-NFA simulation below — is now
+> **implemented and wired as the default search path** for the matchable subset.
+> The per-step NFA simulation recomputed the whole-state epsilon-closure on every
+> input byte; the cached DFA **memoizes the (frontier, byte-class) → next-frontier
+> transition** the first time it is seen, so a steady-state ASCII scan costs roughly
+> **one atomic table load plus one begin-gather per byte** instead of a closure walk
+> plus a per-thread atom test. Byte values are folded to **equivalence classes** so
+> the table is narrow, the begin offset each thread carries is propagated through a
+> cached per-transition **source map** (no allocation in the steady state — two
+> ping-pong buffers), the table is **bounded** (RE2 clear-and-rebuild on overflow),
+> and a filled transition is published via an **atomic pointer** so a steady-state
+> hit takes no lock. **Multi-byte UTF-8 lead bytes and assertion-crossing closures
+> fall back** to the per-step simulation for that one position, then resume cached.
+> An **adaptive fallback-dominance gate** watches the opening window of consumed
+> positions: if the per-step fallback dominates (a multi-byte-heavy UTF-8 haystack,
+> where the cached table would intern a state per position and never pay for itself),
+> the driver abandons the cached path and reruns the whole search on the per-step
+> NFA simulation, which handles every position uniformly with **no per-position
+> interning and no allocation** — so multi-byte-heavy input is never slower than the
+> bare simulation while ASCII-dominated input keeps the cached-table win.
+> Leftmost-FIRST and the linear-time ReDoS guarantee are preserved; the result is
+> byte-identical to the simulation (and the backtracker) on the full `diff_ruby`
+> MRI cross-check + C Onigmo / Ruby / RE2, 100 % coverage held.
+>
+> **Inner-loop before (NFA-sim) → after (cached DFA), steady-state, Apple M4 Max:**
+>
+> | workload (88–235 KB scan) | NFA-sim | cached DFA | speedup |
+> |---|---|---|---|
+> | `zoo\|quux\|kite` miss (`AlternationMiss`) | 565 µs | 388 µs | **1.46×** |
+> | `.x` binary /n scan (`BinaryByteScan`) | 3 100 µs | 417 µs | **7.4×** |
+> | `\d+needle\d+` forced-slow miss (`ForcedSlowMiss`) | 2 840 µs | 296 µs | **9.6×** |
+> | `cat\|dog\|fox` early hit (`AlternationHit`) | 236 ns | 207 ns | 1.14× |
+> | `.x` multi-byte UTF-8 miss (`UTF8DotScan`) | 1 920 µs | 1 920 µs | **1.0× (parity — gated to sim)** |
+>
+> **vs C Onigmo (full harness, `match_ns`, lower = faster):** the cached DFA pushes
+> the **full-scan / miss** cases past C and far past RE2 — `zoo|quux|kite` miss
+> **370 µs = 1.20× C, 5.8× RE2**; `ipv4` `([0-9]{1,3}\.){3}…` **28 µs = 7.1× C,
+> 37× RE2**; `email` **408 µs = 5.2× C, 4.1× RE2**. ReDoS holds linear (C Onigmo
+> times out on `\A(a|aa)+b`). **Multi-byte regression — fixed (2026-06-26):** `.x`
+> over a 50 %-multibyte UTF-8 haystack (`UTF8DotScan`) previously regressed to
+> **2.65 ms vs the NFA-sim's 1.92 ms** (≈72 000 allocs — a state intern per multibyte
+> rune). The adaptive fallback-dominance gate now reroutes that input class to the
+> per-step simulation, restoring **1.92 ms / ≈0 steady-state allocs — parity with the
+> NFA-sim, no input class slower than it** — while the binary-mode same-pattern scan
+> (all width-1, stays on the cached table) keeps its **6.7× win** (460 µs vs 3.10 ms).
+> **Residual:** **early-hit micro-cases** (`[a-zA-Z]+`/`\A\w+`/`[0-9]{2,4}` ending a
+> few bytes in) still trail C 0.19–0.29× — the match ends before the table warms, so
+> DFA setup dominates a tiny scan and C's per-call setup is cheaper. The lever targets
+> ASCII-dominated inner loops, where it delivers.
+
 > **Lazy-DFA update (2026-06-24):** the remaining inner-loop lever named below —
 > **a lazy / on-the-fly NFA simulation (RE2 / Go-`regexp` style)** for the
 > matchable subset — is now **implemented**. A Thompson-NFA derived from the
@@ -65,7 +116,7 @@ faster).
 |---|---|---|---|---|---|---|
 | `needle` (miss) | 88 KB text | **5046** · 960 | 2885 · 194 | 5081 · 601 | **1.75×** | ✅ beat C (prefilter) |
 | `needle` (hit @ end) | 88 KB text | **4954** · 954 | 2898 · 217 | 5104 · 616 | **1.71×** | ✅ beat C (prefilter) |
-| `zoo\|quux\|kite` (miss) | 88 KB | 130 · 1336 | 193 · 785 | 42 · 1143 | 0.67× | ⚠️ < C, **3.1× > RE2** |
+| `zoo\|quux\|kite` (miss) | 88 KB | **238** · 1882 | 199 · 770 | 42 · 1114 | **1.20×** | ✅ beat C (cached DFA), **5.8× > RE2** |
 | `([0-9]{1,3}\.){3}[0-9]{1,3}` | 88 KB, hit @ end | **2694** · 2207 | 414 · 1092 | 82 · 1796 | **6.50×** | ✅ beat C **and** RE2 |
 | `cat\|dog\|fox` (hit) | early hit | 222 k · 1307 | 1125 k · 750 | 172 k · 1074 | 0.20× | ⚠️ < C |
 | `[a-zA-Z]+` | early hit | 223 k · 666 | 3600 k · 535 | 1667 k · 337 | 0.06× | ❌ << C (was 0.04×) |
