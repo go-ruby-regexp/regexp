@@ -118,6 +118,17 @@ const (
 	// AnchorPrevMatch matches only at the position where the previous match or
 	// the scan start began (\G).
 	AnchorPrevMatch
+	// AnchorWordBoundary matches at a position between a word character and a
+	// non-word character or a string edge (\b). A word character is the same
+	// notion Onigmo/MRI use for \b: in UTF8 mode a Unicode word code point
+	// (letter, mark, decimal number, or connector punctuation — \p{Word}), and in
+	// ASCII8BIT (/n) mode an ASCII word byte ([0-9A-Za-z_]). Note this is MRI's
+	// own \b definition, which is Unicode-aware in UTF8 mode even though \w is
+	// ASCII-only there — \b deliberately mirrors the oracle, not \w.
+	AnchorWordBoundary
+	// AnchorNonWordBoundary matches at any position that is NOT a word boundary
+	// (\B), using the same word-character notion as AnchorWordBoundary.
+	AnchorNonWordBoundary
 )
 
 // Anchor is a zero-width assertion.

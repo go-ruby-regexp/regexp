@@ -131,6 +131,14 @@ func (d *dfaSim) add(dst *[]dfaThread, node int32, begin int32, sp int) {
 		if sp == d.ctx.gpos {
 			d.add(dst, int32(n.x), begin, sp)
 		}
+	case nfaAssertWordBoundary:
+		if wordBoundaryAt(d.ctx.input, d.ctx.enc, sp) {
+			d.add(dst, int32(n.x), begin, sp)
+		}
+	case nfaAssertNonWordBoundary:
+		if !wordBoundaryAt(d.ctx.input, d.ctx.enc, sp) {
+			d.add(dst, int32(n.x), begin, sp)
+		}
 	}
 	// nfaChar / nfaMatch nodes never reach this switch: they are always context-free
 	// (their epsilon-closure is themselves), so the fast path above appended them
@@ -448,4 +456,51 @@ func propStepCtx(c dfaCtx, in compile.Inst, sp int) (bool, int) {
 		return true, w
 	}
 	return false, 0
+}
+
+// wordBoundaryAt reports whether position sp in input is a word boundary (\b):
+// the character ending just before sp and the character starting at sp differ in
+// word-ness, where one side being a string edge counts as a non-word side. The
+// word-character notion mirrors Onigmo/MRI's \b exactly — Unicode-aware in UTF8
+// mode (\p{Word}: letter, mark, decimal number, or connector punctuation) and
+// ASCII-only in ASCII8BIT (/n) mode ([0-9A-Za-z_]). Note this is deliberately
+// MRI's own \b rule, which is Unicode-aware in UTF8 mode even though \w is
+// ASCII-only there. \B is the complement (!wordBoundaryAt).
+func wordBoundaryAt(input string, enc compile.Encoding, sp int) bool {
+	return wordCharBefore(input, enc, sp) != wordCharAfter(input, enc, sp)
+}
+
+// wordCharBefore reports whether the character ending at offset sp is a word
+// character. The empty-prefix edge (sp == 0) is a non-word side.
+func wordCharBefore(input string, enc compile.Encoding, sp int) bool {
+	if sp <= 0 {
+		return false
+	}
+	if enc == compile.ASCII8BIT {
+		return asciiWordByte(input[sp-1])
+	}
+	r, _ := utf8.DecodeLastRuneInString(input[:sp])
+	return charset.Match("Word", false, r)
+}
+
+// wordCharAfter reports whether the character starting at offset sp is a word
+// character. The end-of-string edge (sp >= len) is a non-word side.
+func wordCharAfter(input string, enc compile.Encoding, sp int) bool {
+	if sp >= len(input) {
+		return false
+	}
+	if enc == compile.ASCII8BIT {
+		return asciiWordByte(input[sp])
+	}
+	r, _ := utf8.DecodeRuneInString(input[sp:])
+	return charset.Match("Word", false, r)
+}
+
+// asciiWordByte reports whether b is an ASCII word byte ([0-9A-Za-z_]), the /n
+// (ASCII8BIT) notion of a \b word character.
+func asciiWordByte(b byte) bool {
+	return b == '_' ||
+		(b >= '0' && b <= '9') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= 'a' && b <= 'z')
 }

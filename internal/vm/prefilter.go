@@ -110,10 +110,12 @@ loop:
 				pf.anchored = true
 			}
 			pc++
-		case compile.OpAssertBeginLine, compile.OpAssertPrevMatch:
-			// ^ (no /m as implemented here means start-of-text-or-after-newline) and
-			// \G constrain the start too, but not to a single byte set we exploit
-			// here; step over them without claiming a prefix.
+		case compile.OpAssertBeginLine, compile.OpAssertPrevMatch,
+			compile.OpAssertWordBoundary, compile.OpAssertNonWordBoundary:
+			// ^ (no /m as implemented here means start-of-text-or-after-newline),
+			// \G, and the word-boundary asserts (\b / \B) constrain the start too,
+			// but not to a single byte set we exploit here; step over them without
+			// claiming a prefix.
 			pc++
 		case compile.OpChar:
 			// A fixed leading byte: extend the literal prefix and pin the first-byte
@@ -239,7 +241,8 @@ func requiredLiteral(insts []compile.Inst) string {
 		case compile.OpAny, compile.OpClass, compile.OpFoldChar, compile.OpUniProp,
 			compile.OpBackref, compile.OpAssertBeginText, compile.OpAssertEndText,
 			compile.OpAssertEndTextOptNL, compile.OpAssertBeginLine,
-			compile.OpAssertEndLine, compile.OpAssertPrevMatch:
+			compile.OpAssertEndLine, compile.OpAssertPrevMatch,
+			compile.OpAssertWordBoundary, compile.OpAssertNonWordBoundary:
 			// Unconditional but not a fixed byte (or a zero-width assertion that breaks
 			// byte adjacency): end the current literal run, keep walking the spine.
 			flush()
