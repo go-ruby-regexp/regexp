@@ -909,6 +909,12 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Anchor{Kind: ast.AnchorEndTextOptNL}, nil
 	case 'G':
 		return &ast.Anchor{Kind: ast.AnchorPrevMatch}, nil
+	case 'b':
+		// Outside a character class \b is the word-boundary assertion. (Inside a
+		// class it is the backspace byte 0x08; that path is in parseClassItem.)
+		return &ast.Anchor{Kind: ast.AnchorWordBoundary}, nil
+	case 'B':
+		return &ast.Anchor{Kind: ast.AnchorNonWordBoundary}, nil
 	case 'd', 'D', 'w', 'W', 's', 'S', 'h', 'H':
 		return perlClass(b), nil
 	case 'R':
@@ -1371,6 +1377,11 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 			return 0, nil, nil, err
 		}
 		return 0, nil, &ast.PropRef{Name: name, Negate: negate}, nil
+	case 'b':
+		// Inside a character class \b is the BACKSPACE byte 0x08, not a word
+		// boundary (a word boundary is meaningless inside a class). This matches
+		// Onigmo/MRI: /[\b]/ matches "\b".
+		return '\b', nil, nil, nil
 	case 'n':
 		return '\n', nil, nil, nil
 	case 't':

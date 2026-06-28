@@ -90,6 +90,15 @@ const (
 	// OpAssertPrevMatch asserts the position equals the scan/previous-match start
 	// (\G).
 	OpAssertPrevMatch
+	// OpAssertWordBoundary asserts a word boundary (\b): the position lies between
+	// a word character and a non-word character or a string edge. The word-char
+	// notion is encoding-dependent and mirrors Onigmo/MRI's \b — a Unicode word
+	// code point (\p{Word}) in UTF8 mode, an ASCII word byte ([0-9A-Za-z_]) in
+	// ASCII8BIT mode — which the VM evaluates from the bytes surrounding the cursor.
+	OpAssertWordBoundary
+	// OpAssertNonWordBoundary asserts the complement of OpAssertWordBoundary (\B):
+	// the position is NOT a word boundary.
+	OpAssertNonWordBoundary
 	// OpLook begins a lookaround assertion. Its sub-program is emitted inline
 	// immediately after it and is terminated by OpLookEnd; X is the continuation
 	// pc just past that OpLookEnd. Negate selects the negative form, Behind the
@@ -312,6 +321,10 @@ func (b *builder) anchor(a *ast.Anchor) {
 		b.emit(Inst{Op: OpAssertEndLine})
 	case ast.AnchorPrevMatch:
 		b.emit(Inst{Op: OpAssertPrevMatch})
+	case ast.AnchorWordBoundary:
+		b.emit(Inst{Op: OpAssertWordBoundary})
+	case ast.AnchorNonWordBoundary:
+		b.emit(Inst{Op: OpAssertNonWordBoundary})
 	}
 }
 

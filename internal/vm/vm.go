@@ -504,6 +504,16 @@ func (m *machine) run(start int) ([]int, bool, error) {
 				pc++
 				continue
 			}
+		case compile.OpAssertWordBoundary:
+			if wordBoundaryAt(m.input, m.prog.Enc, sp) {
+				pc++
+				continue
+			}
+		case compile.OpAssertNonWordBoundary:
+			if !wordBoundaryAt(m.input, m.prog.Enc, sp) {
+				pc++
+				continue
+			}
 		case compile.OpLook:
 			matched, err := m.look(pc, in, sp)
 			if err != nil {
@@ -948,6 +958,16 @@ func (m *machine) execLook(body, sp, endAt int, keep bool) (bool, error) {
 			}
 		case compile.OpAssertPrevMatch:
 			if sp == m.gpos {
+				pc++
+				continue
+			}
+		case compile.OpAssertWordBoundary:
+			if wordBoundaryAt(m.input, m.prog.Enc, sp) {
+				pc++
+				continue
+			}
+		case compile.OpAssertNonWordBoundary:
+			if !wordBoundaryAt(m.input, m.prog.Enc, sp) {
 				pc++
 				continue
 			}

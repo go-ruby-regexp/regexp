@@ -43,17 +43,19 @@ import (
 type nfaOp uint8
 
 const (
-	nfaChar            nfaOp = iota // consume: matches the atom in inst, one transition
-	nfaSplit                        // epsilon: try x (preferred) then y
-	nfaJmp                          // epsilon: go to x
-	nfaSave                         // epsilon: capture save — transparent (no submatch)
-	nfaMatch                        // accepting
-	nfaAssertBeginText              // epsilon assertion: \A
-	nfaAssertEndText                // epsilon assertion: \z
-	nfaAssertEndTextNL              // epsilon assertion: \Z
-	nfaAssertBeginLine              // epsilon assertion: ^
-	nfaAssertEndLine                // epsilon assertion: $
-	nfaAssertPrevMatch              // epsilon assertion: \G
+	nfaChar                  nfaOp = iota // consume: matches the atom in inst, one transition
+	nfaSplit                              // epsilon: try x (preferred) then y
+	nfaJmp                                // epsilon: go to x
+	nfaSave                               // epsilon: capture save — transparent (no submatch)
+	nfaMatch                              // accepting
+	nfaAssertBeginText                    // epsilon assertion: \A
+	nfaAssertEndText                      // epsilon assertion: \z
+	nfaAssertEndTextNL                    // epsilon assertion: \Z
+	nfaAssertBeginLine                    // epsilon assertion: ^
+	nfaAssertEndLine                      // epsilon assertion: $
+	nfaAssertPrevMatch                    // epsilon assertion: \G
+	nfaAssertWordBoundary                 // epsilon assertion: \b (position-dependent on surrounding chars)
+	nfaAssertNonWordBoundary              // epsilon assertion: \B
 )
 
 // nfaInst is one NFA node. For a consuming node (nfaChar) inst holds the original
@@ -218,6 +220,12 @@ func (b *nfaBuilder) plan() bool {
 			b.toSrc(node, 0, pc+1)
 		case compile.OpAssertPrevMatch:
 			node := b.emit(nfaInst{op: nfaAssertPrevMatch})
+			b.toSrc(node, 0, pc+1)
+		case compile.OpAssertWordBoundary:
+			node := b.emit(nfaInst{op: nfaAssertWordBoundary})
+			b.toSrc(node, 0, pc+1)
+		case compile.OpAssertNonWordBoundary:
+			node := b.emit(nfaInst{op: nfaAssertNonWordBoundary})
 			b.toSrc(node, 0, pc+1)
 		case compile.OpLoop:
 			if !b.planLoop(pc, in) {

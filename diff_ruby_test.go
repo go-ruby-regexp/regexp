@@ -134,6 +134,46 @@ var diffCorpus = []rubyCase{
 	{`\G\d+`, "123abc"},
 	{`\G\d+`, "abc123"},
 
+	// Word-boundary assertions \b and \B (zero-width). MRI's \b sits between a
+	// word char ([0-9A-Za-z_], ASCII here) and a non-word char or string edge;
+	// \B is its complement. These are all ASCII so byte and character offsets
+	// coincide, letting the span-compared corpus carry them.
+	{`\bfoo\b`, "foo"},
+	{`\bfoo\b`, "afoo"},
+	{`\bfoo\b`, "foo!"},
+	{`\bfoo\b`, "a foo b"},
+	{`\bfoo\b`, "_foo_"},
+	{`\bfoo`, "foo"},
+	{`foo\b`, "foo"},
+	{`\bcat\b`, "the cat sat"},
+	{`\b\w+\b`, "  word  "},
+	{`\w+\b`, "hello world"},
+	{`\w+\b?`, "hello"}, // the Puppet-lexer optional-boundary pattern
+	{`\b123\b`, "x123x"},
+	{`\b_\b`, "_"},
+	{`\Bfoo`, "afoo"},
+	{`\Bfoo`, "foo"},
+	{`\Bing\b`, "running"},
+	{`a\bb`, "ab"},
+	{`a\Bb`, "ab"},
+	{`\b`, "a"},
+	{`\b`, "!"},
+	{`\b`, ""},
+	{`\b`, "a b"},
+	{`\B`, "a"},
+	{`\B`, "!"},
+	{`\B`, ""},
+	{`\B`, "ab"},
+	{`x*\b`, "xxx yyy"},
+	{`foo\b?bar`, "foobar"},
+	{`(?:\bfoo\b|\bbar\b)`, "x bar y"},
+	{`(\bfoo\b)`, "a foo b"}, // capture forces the backtracking-VM path
+	{`(\w+)\b`, "hi!"},
+	// \b inside a character class is the BACKSPACE byte 0x08, not a boundary.
+	{`[\b]`, "a\bc"},
+	{`a[\b]c`, "a\bc"},
+	{`[\ba]+`, "aa\bbb"},
+
 	// POSIX bracket classes (Phase 3).
 	{`[[:alpha:]]+`, "ab12cd"},
 	{`[[:digit:]]+`, "x42y"},
@@ -386,6 +426,20 @@ var diffUnicodeCorpus = []rubyCase{
 	{`[\p{L}\d]+`, "héllo3!"},
 	{`[^\p{L}]+`, "héllo123x"},
 	{`(\p{Lu})(\p{Ll}+)`, "Héllo"},
+
+	// Word-boundary \b / \B on multi-byte UTF-8 input. In UTF8 mode MRI's \b is
+	// Unicode-aware (a word char is \p{Word}: letter | mark | decimal | connector),
+	// so an accented letter is a word char and "café" is a single word run — even
+	// though \w itself stays ASCII-only. These are substring-compared (the engine
+	// reports byte offsets, MRI character offsets).
+	{`\bcafé\b`, "le café est"},
+	{`\w+é\b`, "café"},
+	{`\bé`, "aé"},    // no boundary inside the word run "aé" → no match
+	{`é\b`, "café "}, // boundary after é (space follows)
+	{`\Bé`, "café"},  // é is mid-word, so a non-boundary precedes it
+	{`α\b`, "βα γ"},  // Greek letters are word chars; boundary before the space
+	{`\bнет\b`, "да нет да"},
+	{`\B…`, "a…b"}, // ellipsis is punctuation (non-word): position before it IS a boundary, so \B… does not match
 
 	// \R also matches the multi-byte Unicode linebreaks NEL (U+0085), LS (U+2028)
 	// and PS (U+2029); these are compared by substring since the bytes span more
