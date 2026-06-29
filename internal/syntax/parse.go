@@ -1388,10 +1388,25 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 		return '\t', nil, nil, nil
 	case 'r':
 		return '\r', nil, nil, nil
+	case 'f':
+		return '\f', nil, nil, nil
+	case 'v':
+		return '\v', nil, nil, nil
+	case 'a':
+		return '\a', nil, nil, nil // bell, 0x07
+	case 'e':
+		return 0x1b, nil, nil, nil // escape
 	case '\\', ']', '[', '^', '-':
 		return e, nil, nil, nil
 	default:
-		return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
+		// An escaped non-alphanumeric character is that literal byte: Onigmo/Ruby
+		// treat a redundant class escape such as \. \+ \~ \/ \* as the literal
+		// punctuation (e.g. /[\.\+~]/ matches "." "+" "~"). Only an unknown
+		// *alphanumeric* escape (e.g. \q) is a genuine error.
+		if (e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z') || (e >= '0' && e <= '9') {
+			return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
+		}
+		return e, nil, nil, nil
 	}
 }
 
