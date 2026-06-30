@@ -7,7 +7,7 @@ import "testing"
 func TestValid(t *testing.T) {
 	valid := []string{
 		"L", "N", "P", "S", "Z", "C",
-		"Lu", "Ll", "Lt", "Lm", "Lo", "Nd", "Nl", "No",
+		"Lu", "Ll", "Lt", "Lm", "Lo", "Nd", "Nl", "No", "Cf",
 		"Alpha", "Alnum", "Digit", "Space", "Upper", "Lower", "Word",
 	}
 	for _, name := range valid {
@@ -62,6 +62,8 @@ func TestMatch(t *testing.T) {
 		{"Nl", false, '4', false},
 		{"No", false, '²', true}, // superscript two is No
 		{"No", false, '4', false},
+		{"Cf", false, '\u200d', true}, // zero-width joiner is a format char
+		{"Cf", false, 'a', false},
 		// Aliases.
 		{"Alpha", false, 'é', true},
 		{"Alpha", false, '4', false},
