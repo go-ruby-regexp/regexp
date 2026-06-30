@@ -931,6 +931,14 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Literal{B: '\t'}, nil
 	case 'r':
 		return &ast.Literal{B: '\r'}, nil
+	case 'f':
+		return &ast.Literal{B: '\f'}, nil
+	case 'v':
+		return &ast.Literal{B: '\v'}, nil
+	case 'a':
+		return &ast.Literal{B: '\a'}, nil
+	case 'e':
+		return &ast.Literal{B: 0x1b}, nil
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		idx := int(b - '0')
 		for !p.eof() && p.peek() >= '0' && p.peek() <= '9' {
@@ -1405,6 +1413,14 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 		return '\t', nil, nil, nil
 	case 'r':
 		return '\r', nil, nil, nil
+	case 'f':
+		return '\f', nil, nil, nil
+	case 'v':
+		return '\v', nil, nil, nil
+	case 'a':
+		return '\a', nil, nil, nil
+	case 'e':
+		return 0x1b, nil, nil, nil
 	case '\\', ']', '[', '^', '-':
 		return e, nil, nil, nil
 	default:
