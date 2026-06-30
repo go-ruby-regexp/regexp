@@ -952,8 +952,25 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		// escapes whether or not x is in effect, matching Ruby.
 		return &ast.Literal{B: b}, nil
 	default:
+		// Onigmo/MRI treat a backslash before any ASCII punctuation byte as that
+		// literal byte, even when the byte is not a metacharacter — so /a\!b/,
+		// /a\/b/, /a\@b/ all match the obvious literal. The metacharacter punct is
+		// handled by the explicit case above; this catches the rest (!, /, @, %, ~,
+		// ", ', &, =, <, >, :, ;, ,, `).
+		if isASCIIPunct(b) {
+			return &ast.Literal{B: b}, nil
+		}
 		return nil, p.errorf("unsupported escape \\%c", b)
 	}
+}
+
+// isASCIIPunct reports whether b is one of the ASCII punctuation/symbol bytes.
+// Onigmo and MRI accept a backslash before any such byte as that literal byte,
+// even when the byte carries no special meaning, so the regex-escape parser
+// treats \<punct> as the literal punct rather than an error.
+func isASCIIPunct(b byte) bool {
+	return (b >= '!' && b <= '/') || (b >= ':' && b <= '@') ||
+		(b >= '[' && b <= '`') || (b >= '{' && b <= '~')
 }
 
 // parseProp parses the body of a Unicode property escape whose introducing
@@ -1391,6 +1408,11 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 	case '\\', ']', '[', '^', '-':
 		return e, nil, nil, nil
 	default:
+		// As outside a class, a backslash before any ASCII punctuation byte is that
+		// literal byte (Onigmo/MRI), so /[\!\/]/ matches "!" and "/".
+		if isASCIIPunct(e) {
+			return e, nil, nil, nil
+		}
 		return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
 	}
 }

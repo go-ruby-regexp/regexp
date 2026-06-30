@@ -217,6 +217,24 @@ func TestParseEscapes(t *testing.T) {
 	}
 }
 
+func TestParseEscapedASCIIPunct(t *testing.T) {
+	// Onigmo/MRI accept a backslash before any ASCII punctuation byte as that
+	// literal byte, even when it is not a metacharacter. Verify a representative
+	// spread both outside and inside a character class.
+	for _, b := range []byte{'!', '/', '@', '%', '~', '"', '\'', '&', '=', '<', '>', ':', ';', ',', '`'} {
+		r := mustParse(t, `\`+string(b))
+		lit, ok := r.Root.(*ast.Literal)
+		if !ok || lit.B != b {
+			t.Errorf(`\%c outside class: got %#v, want literal %q`, b, r.Root, b)
+		}
+		rc := mustParse(t, `[\`+string(b)+`]`)
+		cls, ok := rc.Root.(*ast.Class)
+		if !ok || len(cls.Ranges) != 1 || byte(cls.Ranges[0].Lo) != b || byte(cls.Ranges[0].Hi) != b {
+			t.Errorf(`[\%c]: got %#v, want class member %q`, b, rc.Root, b)
+		}
+	}
+}
+
 func TestParsePerlClasses(t *testing.T) {
 	for _, tc := range []struct {
 		pat    string
