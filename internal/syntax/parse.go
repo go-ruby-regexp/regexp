@@ -1418,18 +1418,20 @@ func (p *parser) parseClassItem() (byte, []ast.ClassRange, *ast.PropRef, error) 
 	case 'v':
 		return '\v', nil, nil, nil
 	case 'a':
-		return '\a', nil, nil, nil
+		return '\a', nil, nil, nil // bell, 0x07
 	case 'e':
-		return 0x1b, nil, nil, nil
+		return 0x1b, nil, nil, nil // escape
 	case '\\', ']', '[', '^', '-':
 		return e, nil, nil, nil
 	default:
-		// As outside a class, a backslash before any ASCII punctuation byte is that
-		// literal byte (Onigmo/MRI), so /[\!\/]/ matches "!" and "/".
-		if isASCIIPunct(e) {
-			return e, nil, nil, nil
+		// An escaped non-alphanumeric character is that literal byte: Onigmo/Ruby
+		// treat a redundant class escape such as \. \+ \~ \/ \* as the literal
+		// punctuation (e.g. /[\.\+~]/ matches "." "+" "~"). Only an unknown
+		// *alphanumeric* escape (e.g. \q) is a genuine error.
+		if (e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z') || (e >= '0' && e <= '9') {
+			return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
 		}
-		return 0, nil, nil, p.errorf("unsupported escape \\%c in character class", e)
+		return e, nil, nil, nil
 	}
 }
 
