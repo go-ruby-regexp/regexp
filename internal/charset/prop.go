@@ -8,8 +8,8 @@
 // engine implements:
 //
 //   - General categories: the one-letter groups L, N, P, S, Z, C and the
-//     two-letter letter/number subcategories Lu, Ll, Lt, Lm, Lo, Nd. These map
-//     directly onto Go's unicode range tables.
+//     two-letter letter/number subcategories Lu, Ll, Lt, Lm, Lo, Nd, Nl, No.
+//     These map directly onto Go's unicode range tables.
 //   - Onigmo POSIX-style aliases: Alpha, Alnum, Digit, Space, Upper, Lower and
 //     Word. These follow Ruby's definitions (e.g. Space is the Unicode
 //     White_Space property, which is broader than the Z general category;
@@ -52,6 +52,10 @@ func classify(name string) func(rune) bool {
 		return func(r rune) bool { return unicode.Is(unicode.Lo, r) }
 	case "Nd":
 		return func(r rune) bool { return unicode.Is(unicode.Nd, r) }
+	case "Nl":
+		return func(r rune) bool { return unicode.Is(unicode.Nl, r) }
+	case "No":
+		return func(r rune) bool { return unicode.Is(unicode.No, r) }
 	// Onigmo POSIX-style aliases.
 	case "Alpha":
 		return isAlpha
