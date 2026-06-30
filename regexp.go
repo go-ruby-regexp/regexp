@@ -130,6 +130,27 @@ func (re *Regexp) Match(s string) *MatchData {
 	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
 }
 
+// MatchAt attempts a match anchored exactly at byte offset pos in s, with \G
+// bound to pos. It does not scan forward: it matches at pos or returns nil. The
+// whole string s stays visible to the matcher, so the line/text anchors (^, \A)
+// and lookbehind see the real prefix s[:pos] — exactly the semantics a
+// StringScanner-style tokenizer needs (a Rouge RegexLexer scanning a buffer in
+// place). Group offsets in the returned MatchData are absolute into s.
+//
+// This is the faithful primitive for cursor-anchored lexing: pattern ^ matches
+// only at a genuine line start, not merely at pos. A timeout or exhausted step
+// budget yields nil, as with Match.
+func (re *Regexp) MatchAt(s string, pos int) *MatchData {
+	if pos < 0 || pos > len(s) {
+		return nil
+	}
+	caps, ok, err := vm.MatchAt(re.prog, s, pos, vm.DefaultBudget)
+	if err != nil || !ok {
+		return nil
+	}
+	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
+}
+
 // MatchString reports whether s contains a match of the regular expression. When
 // the program is in the lazy-NFA subset (no backreference, call, lookaround,
 // atomic group, or over-large bounded loop) the is-match question is answered by

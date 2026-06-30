@@ -64,6 +64,36 @@ func TestMatchString(t *testing.T) {
 	}
 }
 
+func TestMatchAt(t *testing.T) {
+	// \G anchors at the requested offset and the whole string stays visible, so
+	// ^ matches only at a real line start and offsets are absolute.
+	re := mustCompile(t, `\G(?:[a-z]+)`)
+	s := "ab cd\nef"
+	if m := re.MatchAt(s, 3); m == nil || m.Str(0) != "cd" || m.Begin(0) != 3 || m.End(0) != 5 {
+		t.Fatalf("MatchAt(%q,3) = %#v, want cd at [3,5)", s, m)
+	}
+	// No match anchored at a position whose byte is not [a-z].
+	if m := re.MatchAt(s, 2); m != nil {
+		t.Errorf("MatchAt at a space should be nil, got %#v", m)
+	}
+	// ^ must match only at a genuine line start.
+	caret := mustCompile(t, `\G(?:^[a-z]+)`)
+	if caret.MatchAt(s, 6) == nil { // pos 6 is just after '\n'
+		t.Error("^[a-z]+ should match at the line start (pos 6)")
+	}
+	if caret.MatchAt(s, 3) != nil { // pos 3 is mid-line
+		t.Error("^[a-z]+ should not match mid-line (pos 3)")
+	}
+	// Out-of-range positions return nil.
+	if re.MatchAt(s, -1) != nil || re.MatchAt(s, len(s)+1) != nil {
+		t.Error("out-of-range pos should yield nil")
+	}
+	// A position exactly at len(s) is valid input to attempt (and fails here).
+	if re.MatchAt("", 0) != nil {
+		t.Error("empty input should not match [a-z]+")
+	}
+}
+
 func TestNoMatch(t *testing.T) {
 	re := mustCompile(t, `xyz`)
 	if m := re.Match("abc"); m != nil {

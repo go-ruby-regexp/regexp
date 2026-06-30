@@ -303,6 +303,34 @@ func Match(prog *compile.Program, input string, budget int) ([]int, bool, error)
 	return MatchTimeout(prog, input, budget, time.Time{})
 }
 
+// MatchAt attempts a match anchored exactly at byte offset pos, with \G bound to
+// pos, while the whole input string remains visible so the line/text anchors
+// (^ \A) and lookbehind see the real prefix input[:pos]. Unlike Match it does
+// not scan forward: it either matches at pos or fails. This is the primitive a
+// StringScanner-style tokenizer (e.g. a Rouge RegexLexer) needs so that a
+// pattern's ^ matches only at a true line start and \G pins to the cursor. It
+// returns the capture slots, whether a match occurred, and an error only when
+// the step budget is exhausted.
+func MatchAt(prog *compile.Program, input string, pos, budget int) ([]int, bool, error) {
+	return MatchTimeoutAt(prog, input, pos, budget, time.Time{})
+}
+
+// MatchTimeoutAt is MatchAt with a wall-clock deadline, mirroring the
+// MatchTimeout / Match relationship.
+func MatchTimeoutAt(prog *compile.Program, input string, pos, budget int, deadline time.Time) ([]int, bool, error) {
+	m := &machine{
+		prog:     prog,
+		input:    input,
+		budget:   budget,
+		deadline: deadline,
+		memoize:  !prog.HasBackref && !prog.HasCall,
+	}
+	m.memo.init(len(prog.Insts), len(input), prog.HasSplit)
+	m.gpos = pos
+	m.caps = make([]int, prog.NumSlots())
+	return m.run(pos)
+}
+
 // MatchTimeout is Match with an additional wall-clock deadline (Ruby's
 // Regexp.timeout equivalent). When deadline is non-zero the search aborts with
 // ErrTimeout if it is still running past that instant; a pathological match is
