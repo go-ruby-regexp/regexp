@@ -931,6 +931,14 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		return &ast.Literal{B: '\t'}, nil
 	case 'r':
 		return &ast.Literal{B: '\r'}, nil
+	case 'f':
+		return &ast.Literal{B: '\f'}, nil
+	case 'v':
+		return &ast.Literal{B: '\v'}, nil
+	case 'a':
+		return &ast.Literal{B: '\a'}, nil
+	case 'e':
+		return &ast.Literal{B: 0x1b}, nil
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		idx := int(b - '0')
 		for !p.eof() && p.peek() >= '0' && p.peek() <= '9' {
@@ -952,8 +960,25 @@ func (p *parser) parseEscape() (ast.Node, error) {
 		// escapes whether or not x is in effect, matching Ruby.
 		return &ast.Literal{B: b}, nil
 	default:
+		// Onigmo/MRI treat a backslash before any ASCII punctuation byte as that
+		// literal byte, even when the byte is not a metacharacter — so /a\!b/,
+		// /a\/b/, /a\@b/ all match the obvious literal. The metacharacter punct is
+		// handled by the explicit case above; this catches the rest (!, /, @, %, ~,
+		// ", ', &, =, <, >, :, ;, ,, `).
+		if isASCIIPunct(b) {
+			return &ast.Literal{B: b}, nil
+		}
 		return nil, p.errorf("unsupported escape \\%c", b)
 	}
+}
+
+// isASCIIPunct reports whether b is one of the ASCII punctuation/symbol bytes.
+// Onigmo and MRI accept a backslash before any such byte as that literal byte,
+// even when the byte carries no special meaning, so the regex-escape parser
+// treats \<punct> as the literal punct rather than an error.
+func isASCIIPunct(b byte) bool {
+	return (b >= '!' && b <= '/') || (b >= ':' && b <= '@') ||
+		(b >= '[' && b <= '`') || (b >= '{' && b <= '~')
 }
 
 // parseProp parses the body of a Unicode property escape whose introducing
