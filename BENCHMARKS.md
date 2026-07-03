@@ -114,29 +114,67 @@ faster).
 
 | pattern | input | ours (MB/s · compile ns) | Onigmo C (MB/s · cns) | Go regexp RE2 (MB/s · cns) | ours / Onigmo | verdict |
 |---|---|---|---|---|---|---|
-| `needle` (miss) | 88 KB text | **5046** · 960 | 2885 · 194 | 5081 · 601 | **1.75×** | ✅ beat C (prefilter) |
-| `needle` (hit @ end) | 88 KB text | **4954** · 954 | 2898 · 217 | 5104 · 616 | **1.71×** | ✅ beat C (prefilter) |
-| `zoo\|quux\|kite` (miss) | 88 KB | **238** · 1882 | 199 · 770 | 42 · 1114 | **1.20×** | ✅ beat C (cached DFA), **5.8× > RE2** |
-| `([0-9]{1,3}\.){3}[0-9]{1,3}` | 88 KB, hit @ end | **2694** · 2207 | 414 · 1092 | 82 · 1796 | **6.50×** | ✅ beat C **and** RE2 |
-| `cat\|dog\|fox` (hit) | early hit | 222 k · 1307 | 1125 k · 750 | 172 k · 1074 | 0.20× | ⚠️ < C |
-| `[a-zA-Z]+` | early hit | 223 k · 666 | 3600 k · 535 | 1667 k · 337 | 0.06× | ❌ << C (was 0.04×) |
-| `\A\w+` (anchored) | early hit | 205 k · 710 | 3000 k · 287 | 1475 k · 528 | 0.07× | ❌ << C (was 0.05×) |
-| `lazy` (unanchored) | mid hit | 328 k · 646 | 4091 k · 196 | 1059 k · 508 | 0.08× | ❌ << C |
-| `[0-9]{2,4}` (bounded) | early hit | 202 k · 658 | 1895 k · 474 | 537 k · 565 | 0.11× | ❌ << C |
-| `(\w+)=(\w+)` (captures) | mid hit | 38 k · 1377 | 214 k · 600 | 231 k · 986 | 0.18× | ⚠️ < C (was 0.10×; trail killed the copy) |
-| `\p{L}+` (Unicode) | early hit | 323 k · 634 | 3135 k · 11446 | 1706 k · 3374 | 0.10× | ❌ << C (was 0.05×; our compile **18× faster**) |
-| `.x` (UTF-8 miss) | 235 KB | 45.2 · 577 | 319 · 236 | 107 · 378 | 0.14× | ❌ << C (was 0.08×) |
-| `email` | 90 KB, hit @ end | 11.4 · 1260 | 41.9 · 1692 | 51.1 · 1492 | 0.27× | ❌ << C (was 0.12×) |
-| `https?://…` (URL) | 82 KB, hit @ end | 2949 · 1429 | 9254 · 1039 | 3017 · 1193 | 0.32× | ⚠️ < C, ≈ RE2 |
-| `\[\d{4}-…\] (ERROR\|…) \w+` | log line | 134 k · 3128 | 938 k · 2434 | 347 k · 2929 | 0.14× | ❌ << C (was 0.09×) |
-| `\A(a*)*b` (ReDoS) | 40×`a`+`!` | 1.0 · 1537 — safe | 237 · 542 | 62.4 · 824 | 0.004× | ⚠️ safe but slower (fused inner loop; see note) |
-| `\A(a\|aa)+b` (ReDoS) | 40×`a`+`!` | **5.2 · 2221 — safe** | **TIMEOUT > 70 s** | 55.3 · 1218 | **∞** | ✅ **C catastrophically backtracks; we don't** |
-| `(a+)\1b` (backref) | 24×`a`+`c` | 2.1 · 1109 | 7.3 · 499 | *RE2: unsupported* | 0.29× | ❌ < C (no RE2 peer; was 0.11×) |
+| `needle` (miss) | 88 KB text | **5046** · 236 | 2885 · 194 | 5081 · 601 | **1.75×** | ✅ beat C (prefilter) |
+| `needle` (hit @ end) | 88 KB text | **4954** · 238 | 2898 · 217 | 5104 · 616 | **1.71×** | ✅ beat C (prefilter) |
+| `zoo\|quux\|kite` (miss) | 88 KB | **238** · 464 | 199 · 770 | 42 · 1114 | **1.20×** | ✅ beat C (cached DFA), **5.8× > RE2** |
+| `([0-9]{1,3}\.){3}[0-9]{1,3}` | 88 KB, hit @ end | **2694** · 362 | 414 · 1092 | 82 · 1796 | **6.50×** | ✅ beat C **and** RE2 |
+| `cat\|dog\|fox` (hit) | early hit | 222 k · 444 | 1125 k · 750 | 172 k · 1074 | 0.20× | ⚠️ < C |
+| `[a-zA-Z]+` | early hit | 223 k · 147 | 3600 k · 535 | 1667 k · 337 | 0.06× | ❌ << C (was 0.04×) |
+| `\A\w+` (anchored) | early hit | 205 k · 176 | 3000 k · 287 | 1475 k · 528 | 0.07× | ❌ << C (was 0.05×) |
+| `lazy` (unanchored) | mid hit | 328 k · 186 | 4091 k · 196 | 1059 k · 508 | 0.08× | ❌ << C |
+| `[0-9]{2,4}` (bounded) | early hit | 202 k · 145 | 1895 k · 474 | 537 k · 565 | 0.11× | ❌ << C |
+| `(\w+)=(\w+)` (captures) | mid hit | 38 k · 366 | 214 k · 600 | 231 k · 986 | 0.18× | ⚠️ < C (was 0.10×; trail killed the copy) |
+| `\p{L}+` (Unicode) | early hit | 323 k · 128 | 3135 k · 11446 | 1706 k · 3374 | 0.10× | ❌ << C (was 0.05×; our compile **~86× faster**) |
+| `.x` (UTF-8 miss) | 235 KB | 45.2 · 142 | 319 · 236 | 107 · 378 | 0.14× | ❌ << C (was 0.08×) |
+| `email` | 90 KB, hit @ end | 11.4 · 458 | 41.9 · 1692 | 51.1 · 1492 | 0.27× | ❌ << C (was 0.12×) |
+| `https?://…` (URL) | 82 KB, hit @ end | 2949 · 419 | 9254 · 1039 | 3017 · 1193 | 0.32× | ⚠️ < C, ≈ RE2 |
+| `\[\d{4}-…\] (ERROR\|…) \w+` | log line | 134 k · 1069 | 938 k · 2434 | 347 k · 2929 | 0.14× | ❌ << C (was 0.09×) |
+| `\A(a*)*b` (ReDoS) | 40×`a`+`!` | 1.0 · 261 — safe | 237 · 542 | 62.4 · 824 | 0.004× | ⚠️ safe but slower (fused inner loop; see note) |
+| `\A(a\|aa)+b` (ReDoS) | 40×`a`+`!` | **5.2 · 364 — safe** | **TIMEOUT > 70 s** | 55.3 · 1218 | **∞** | ✅ **C catastrophically backtracks; we don't** |
+| `(a+)\1b` (backref) | 24×`a`+`c` | 2.1 · 255 | 7.3 · 499 | *RE2: unsupported* | 0.29× | ❌ < C (no RE2 peer; was 0.11×) |
 
 *(Ruby/MRI proxy column omitted from the table for width; it is in
 `benchmarks/results.csv`. Note MRI 4.0 ships Onigmo's memoized linear-time mode,
 so MRI finishes `\A(a|aa)+b` in ~1.9 µs while the raw 6.2.0 **C library** does
 not — see below.)*
+
+### Lazy compile — deferred machine build (2026-07-03)
+
+`Compile` / `Regexp.new` used to build the whole matcher eagerly — parse **plus**
+the instruction program, the lazy-NFA/DFA accelerator, and the start-locating
+prefilter — even for a pattern compiled once and matched once, or never. That
+made our *compile* 6–29× slower than the C Onigmo we reimplement, even though our
+*match* is at or ahead of it. The machine build is now **deferred to the first
+match** behind a `sync.Once`; `Compile` does only the parse (which still validates
+the whole pattern, so a malformed pattern is rejected at compile time exactly as
+Ruby's `Regexp.new` raises, not at first match). A `sync.Once` makes the one-time
+lowering race-free for a Regexp shared across goroutines, and a `WithTimeout` copy
+shares the same lazily-built machine rather than rebuilding it.
+
+Compile time, best-of-12 single compiles, `ours ÷ C Onigmo` (× MRI), same host
+and harness (`benchmarks/results.csv`), eager → lazy:
+
+| case | pattern | eager × MRI | **lazy × MRI** | ours compile ns |
+|---|---|---|---|---|
+| literal   | `needle`        | 10.1× | **1.1×** | 236 |
+| class     | `[a-zA-Z]+`     | 12.8× | **0.3×** (faster than C) | 147 |
+| alt       | `zoo\|quux\|kite` | 22.9× | **0.6×** | 464 |
+| bounded   | `[0-9]{2,4}`    | 23.3× | **0.3×** | 145 |
+| captures  | `(\w+)=(\w+)`   | 21.6× | **0.6×** | 366 |
+| anchored  | `\A\w+`         | 23.6× | **0.6×** | 176 |
+| unicode   | `\p{L}+`        |  0.6× | **~0.01×** (~86× faster; C pays a table build) | 128 |
+| ipv4      | `([0-9]{1,3}\.){3}…` | 28.8× | **0.4×** | 362 |
+| backref   | `(a+)\1b`       |  2.1× | **0.6×** | 255 |
+
+Compile is now **at or below MRI/C parity on every case**. The irreducible floor
+is the parse (mandatory to validate syntax at compile time): parse alone is
+89–460 ns — already at or below C Onigmo's 178–1000 ns compile — so there is no
+material headroom left to remove without giving up eager syntax-error reporting.
+
+**Match did not regress:** the match code path is byte-identical (only *when* the
+machine is built changed). Re-measured match ns/op eager → lazy across all 18
+corpus cases: worst ratio 1.09× (within run-to-run noise; several cases came out
+faster). See `benchmarks/results.csv`.
 
 ## Summary
 
@@ -153,8 +191,13 @@ not — see below.)*
 - **ReDoS safety** (the headline): on `\A(a|aa)+b` the **C Onigmo we reimplement
   blows up past 70 s**; our `(pc,sp)` memo holds it to **~2 µs** (RE2 stays linear
   too). We are *algorithmically safer than the engine we clone* on this class.
-- **Compile time on Unicode**: our `\p{L}+` compile is **18× faster** than C
-  Onigmo's (11.4 µs → 0.63 µs); C Onigmo pays a large table-build cost per compile.
+- **Compile time on Unicode**: our `\p{L}+` compile is **~86× faster** than C
+  Onigmo's (11.0 µs → 0.13 µs); C Onigmo pays a large table-build cost per compile,
+  and since 2026-07-03 we defer our own machine build past the parse (see *Lazy
+  compile* above).
+- **Compile time, across the board** (2026-07-03): deferring the machine build to
+  first match brings every case to **at or below MRI/C compile parity** (was
+  6–29× slower); the floor is now just the mandatory syntax-validating parse.
 
 ### Lazy-DFA — results (2026-06-24)
 The on-the-fly NFA simulation closes the inner-loop gap further. Match-time, the
