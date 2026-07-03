@@ -347,6 +347,12 @@ type DFA struct {
 	usePF    bool      // pf can actually skip positions
 	cache    *dfaCache // memoized lazy-DFA transition table (the inner-loop accelerator)
 	pool     sync.Pool // of *dfaRun: the reusable per-search scratch (see dfaRun)
+	// classRun is non-nil when the whole program is a single anchored repeat of one
+	// byte-decidable atom (`\s+`, `\S+`, `\w+`, `[0-9]+`, `.+`, `a+`). MatchAt then
+	// consumes the run with a tight class-bitset loop instead of the per-step
+	// simulation — the StringScanner#skip / #match? fast path. It is nil for every
+	// other program, which keep the simulation.
+	classRun *classRun
 }
 
 // dfaRun bundles all of one search's reusable scratch — the priority thread
@@ -392,7 +398,7 @@ func BuildDFA(prog *compile.Program) *DFA {
 	if pf.prefix != "" || pf.required != "" {
 		return nil
 	}
-	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc)}
+	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc), classRun: detectClassRun(prog)}
 	n := len(nfa.insts)
 	d.pool.New = func() any {
 		r := &dfaRun{}
@@ -466,6 +472,20 @@ func (d *DFA) Search(input string, enc compile.Encoding, gpos int) (int, int, bo
 // both simpler and faster here. The span is identical to what the backtracking VM
 // anchored at pos would report for every program the DFA accepts.
 func (d *DFA) MatchAt(input string, enc compile.Encoding, pos int) (int, int, bool) {
+	// Fast anchored consumer: when the whole program is a single anchored class /
+	// dot / literal repeat, settle the run with a class-bitset loop rather than the
+	// per-step simulation. It returns a definite answer for the ASCII fast path and
+	// bows out (definite == false) only when it meets a byte it cannot decide (a
+	// multi-byte UTF-8 lead), in which case the general engine below runs the match.
+	// The span it returns is byte-identical to the simulation's for every input.
+	if cr := d.classRun; cr != nil {
+		if end, ok, definite := cr.match(input, enc, pos); definite {
+			if !ok {
+				return -1, -1, false
+			}
+			return pos, end, true
+		}
+	}
 	r := d.pool.Get().(*dfaRun)
 	r.sim = dfaSim{nfa: d.nfa, th: &r.th, ctx: dfaCtx{input: input, enc: enc, gpos: pos}, pf: d.pf, usePF: d.usePF, startAt: pos}
 	b, e, ok := r.sim.search(true)

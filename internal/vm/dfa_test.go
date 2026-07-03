@@ -80,7 +80,7 @@ func forceDFA(prog *compile.Program) *DFA {
 		return nil
 	}
 	pf := analyze(prog)
-	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc)}
+	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc), classRun: detectClassRun(prog)}
 	n := len(nfa.insts)
 	d.pool.New = func() any {
 		r := &dfaRun{}
