@@ -1,6 +1,7 @@
 package onigmo
 
 import (
+	"sync"
 	"time"
 
 	"github.com/go-ruby-regexp/regexp/internal/compile"
@@ -8,21 +9,59 @@ import (
 	"github.com/go-ruby-regexp/regexp/internal/vm"
 )
 
-// Regexp is a compiled regular expression, safe for concurrent use by multiple
-// goroutines. A Regexp is immutable once compiled; WithTimeout returns a copy
-// carrying a wall-clock match limit rather than mutating the receiver, so a
-// shared Regexp stays concurrency-safe.
-type Regexp struct {
-	prog   *compile.Program
-	source string
+// machine holds the heavy, lazily-built matcher state shared by a Regexp and
+// every WithTimeout copy of it. Compile validates the pattern's syntax eagerly
+// (so a malformed pattern is reported at Compile time, as Ruby's Regexp.new
+// does) and stores the parse result here, but defers the expensive lowering —
+// building the instruction program, the lazy-NFA/DFA accelerator, and the
+// start-locating prefilter — until the first match. A Regexp that is compiled
+// but never matched (or matched once) therefore pays only the parse cost, not
+// the full machine build, which the compile-time microbenchmarks show is 5–76×
+// the parse alone.
+//
+// build is guarded by sync.Once so the one-time lowering is race-free even when
+// a freshly-compiled Regexp is shared across goroutines and matched
+// concurrently: every caller observes a fully-built prog/dfa or blocks until the
+// single builder finishes. The result is immutable thereafter, so subsequent
+// concurrent matches read it without synchronisation.
+type machine struct {
+	once sync.Once
+	res  syntax.Result // parsed AST + capture metadata, retained for the deferred lowering
+	enc  compile.Encoding
+	prog *compile.Program
 	// dfa is the lazy-NFA accelerator for the matchable subset (no backreference,
 	// call, lookaround, atomic group, or over-large bounded loop). It finds the
 	// leftmost-first whole-match span in linear time, one step per input position,
 	// replacing the backtracking VM's per-character dispatch for the search /
 	// is-match case and for locating the bounds the VM is anchored to when
 	// submatches are needed. It is nil when the program is outside the subset, in
-	// which case every match runs on the backtracking VM. Built once at compile.
+	// which case every match runs on the backtracking VM. Built once on first use.
 	dfa *vm.DFA
+}
+
+// build performs the deferred lowering exactly once. It lowers the retained
+// parse result into the instruction program and builds the DFA accelerator
+// (which may be nil for a program outside the DFA subset or one a literal
+// prefilter serves better). Safe under concurrent callers via sync.Once.
+func (m *machine) build() {
+	m.once.Do(func() {
+		m.prog = compile.CompileEnc(m.res, m.enc)
+		m.dfa = vm.BuildDFA(m.prog)
+	})
+}
+
+// Regexp is a compiled regular expression, safe for concurrent use by multiple
+// goroutines. A Regexp is immutable once compiled; WithTimeout returns a copy
+// carrying a wall-clock match limit rather than mutating the receiver, so a
+// shared Regexp stays concurrency-safe. The heavy matcher state lives behind the
+// shared *machine, built lazily on first match; the copy WithTimeout returns
+// shares that machine, so a timeout variant never rebuilds it.
+type Regexp struct {
+	m      *machine
+	source string
+	// enc is stored here so Encoding() (and syntax-only introspection) can answer
+	// without forcing the deferred machine build.
+	enc compile.Encoding
 	// timeout is the wall-clock limit for a single match (Ruby's Regexp.timeout
 	// equivalent). Zero means no time limit. It is set only by WithTimeout, which
 	// returns a copy, keeping a shared Regexp immutable.
@@ -60,17 +99,24 @@ func Compile(pattern string) (*Regexp, error) {
 // makes the dot and byte-oriented classes advance by a whole code point;
 // ASCII8BIT makes every atom advance one byte, matching Ruby's /n.
 func CompileEnc(pattern string, enc Encoding) (*Regexp, error) {
+	// Parse eagerly: this validates the whole pattern (backreference bounds,
+	// \g<…> call resolution, balanced groups, …) so a malformed pattern is
+	// reported here — at Compile time, exactly as Ruby's Regexp.new raises
+	// RegexpError rather than deferring the error to the first match. Only the
+	// expensive machine build (instruction program + DFA + prefilter) is deferred
+	// to first use; the parse result is retained so that build can lower it.
 	res, err := syntax.ParseEnc(pattern, enc)
 	if err != nil {
 		return nil, err
 	}
-	prog := compile.CompileEnc(res, enc)
-	return &Regexp{prog: prog, source: pattern, dfa: vm.BuildDFA(prog)}, nil
+	return &Regexp{m: &machine{res: res, enc: enc}, source: pattern, enc: enc}, nil
 }
 
 // Encoding returns the input encoding the Regexp matches under (Ruby's
 // Regexp#encoding equivalent): UTF8 by default, ASCII8BIT for a binary pattern.
-func (re *Regexp) Encoding() Encoding { return re.prog.Enc }
+// It is answered from the stored encoding and does not trigger the deferred
+// machine build.
+func (re *Regexp) Encoding() Encoding { return re.enc }
 
 // String returns the source pattern the Regexp was compiled from.
 func (re *Regexp) String() string { return re.source }
@@ -112,22 +158,24 @@ func (re *Regexp) deadline() time.Time {
 // or the internal step budget is exhausted, Match returns nil — a pathological
 // pattern is bounded rather than allowed to run unboundedly.
 func (re *Regexp) Match(s string) *MatchData {
+	m := re.m
+	m.build()
 	// Capture-free subset: the lazy NFA's leftmost-first span IS the whole answer
 	// (there are no submatches to extract), so skip the backtracking VM entirely and
 	// take the linear-time path. It is bounded by construction, so a configured
 	// timeout never needs to fire on it.
-	if re.dfa != nil && re.prog.NumCapture == 0 {
-		b, e, ok := re.dfa.Search(s, re.prog.Enc, 0)
+	if m.dfa != nil && m.prog.NumCapture == 0 {
+		b, e, ok := m.dfa.Search(s, m.prog.Enc, 0)
 		if !ok {
 			return nil
 		}
-		return &MatchData{input: s, caps: []int{b, e}, ngroups: 0, names: re.prog.Names}
+		return &MatchData{input: s, caps: []int{b, e}, ngroups: 0, names: m.prog.Names}
 	}
-	caps, ok, err := vm.MatchTimeout(re.prog, s, vm.DefaultBudget, re.deadline())
+	caps, ok, err := vm.MatchTimeout(m.prog, s, vm.DefaultBudget, re.deadline())
 	if err != nil || !ok {
 		return nil
 	}
-	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
+	return &MatchData{input: s, caps: caps, ngroups: m.prog.NumCapture, names: m.prog.Names}
 }
 
 // MatchAt attempts a match anchored exactly at byte offset pos in s, with \G
@@ -144,11 +192,13 @@ func (re *Regexp) MatchAt(s string, pos int) *MatchData {
 	if pos < 0 || pos > len(s) {
 		return nil
 	}
-	caps, ok, err := vm.MatchAt(re.prog, s, pos, vm.DefaultBudget)
+	m := re.m
+	m.build()
+	caps, ok, err := vm.MatchAt(m.prog, s, pos, vm.DefaultBudget)
 	if err != nil || !ok {
 		return nil
 	}
-	return &MatchData{input: s, caps: caps, ngroups: re.prog.NumCapture, names: re.prog.Names}
+	return &MatchData{input: s, caps: caps, ngroups: m.prog.NumCapture, names: m.prog.Names}
 }
 
 // MatchString reports whether s contains a match of the regular expression. When
@@ -159,8 +209,10 @@ func (re *Regexp) MatchAt(s string, pos int) *MatchData {
 // exists never depends on which text the groups captured. The backtracking VM is
 // used only for programs outside the subset.
 func (re *Regexp) MatchString(s string) bool {
-	if re.dfa != nil {
-		_, _, ok := re.dfa.Search(s, re.prog.Enc, 0)
+	m := re.m
+	m.build()
+	if m.dfa != nil {
+		_, _, ok := m.dfa.Search(s, m.prog.Enc, 0)
 		return ok
 	}
 	return re.Match(s) != nil

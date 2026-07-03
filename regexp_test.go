@@ -177,6 +177,106 @@ func TestTimeoutAPI(t *testing.T) {
 	}
 }
 
+// TestLazyBuildDeferred verifies the compile/first-match split introduced to
+// keep Regexp.new fast: Compile only parses (validating syntax) and leaves the
+// heavy matcher state (instruction program + DFA) unbuilt, and the first match
+// builds it. A freshly-compiled Regexp therefore has a nil program until it is
+// used.
+func TestLazyBuildDeferred(t *testing.T) {
+	re := mustCompile(t, `[a-z]+\d`)
+	// Nothing heavy has been lowered yet: only the parse result is retained.
+	if re.m.prog != nil {
+		t.Fatal("Compile eagerly built the program; expected it deferred to first match")
+	}
+	// Encoding is answerable without forcing the build (it reads the stored enc).
+	if re.Encoding() != UTF8 {
+		t.Fatalf("Encoding() = %v, want UTF8", re.Encoding())
+	}
+	if re.m.prog != nil {
+		t.Fatal("Encoding() forced the machine build; it must not")
+	}
+	// The first match lowers the program; a later match reuses the same instance.
+	if re.Match("ab7") == nil {
+		t.Fatal("expected a match")
+	}
+	built := re.m.prog
+	if built == nil {
+		t.Fatal("first match did not build the program")
+	}
+	re.MatchString("cd8")
+	if re.m.prog != built {
+		t.Fatal("second match rebuilt the program; build must happen exactly once")
+	}
+}
+
+// TestCompileErrorIsEagerNotDeferred pins the MRI-fidelity contract that a
+// malformed pattern is rejected at Compile time (like Ruby's Regexp.new raising
+// RegexpError) and never silently deferred to a would-be first match. Deferring
+// only the machine build must not defer the *syntax error*.
+func TestCompileErrorIsEagerNotDeferred(t *testing.T) {
+	for _, bad := range []string{"(", "a)", `\1`, `(?<n>)\g<x>`, `a{2,1}`} {
+		re, err := Compile(bad)
+		if err == nil {
+			t.Fatalf("Compile(%q) returned no error; a malformed pattern must fail at compile time, not first match", bad)
+		}
+		if re != nil {
+			t.Fatalf("Compile(%q) returned a non-nil Regexp alongside an error", bad)
+		}
+	}
+}
+
+// TestLazyBuildConcurrent hammers a single freshly-compiled Regexp with many
+// goroutines that all trigger the deferred build simultaneously, across every
+// entry point (Match, MatchString, MatchAt, Encoding) and both the DFA-subset
+// and backtracking (backref) paths. Run under -race it proves the sync.Once
+// guarding the lazy lowering is data-race-free — no goroutine ever observes a
+// half-built program — and that concurrent matches on the shared instance agree.
+func TestLazyBuildConcurrent(t *testing.T) {
+	for _, pat := range []string{`[a-z]+\d`, `(a+)\1`} { // DFA-subset, then backref (VM path)
+		re := mustCompile(t, pat)
+		const g = 64
+		start := make(chan struct{})
+		done := make(chan bool, g)
+		for i := 0; i < g; i++ {
+			go func(i int) {
+				<-start // release all goroutines at once to maximise build contention
+				switch i % 4 {
+				case 0:
+					done <- re.Match("aaa7") != nil
+				case 1:
+					done <- re.MatchString("aaa7")
+				case 2:
+					done <- re.MatchAt("aaa7", 0) != nil
+				default:
+					done <- re.Encoding() == UTF8
+				}
+			}(i)
+		}
+		close(start)
+		for i := 0; i < g; i++ {
+			if !<-done {
+				t.Fatalf("pattern %q: a concurrent match disagreed with the expected result", pat)
+			}
+		}
+	}
+}
+
+// TestWithTimeoutSharesMachine verifies a WithTimeout copy shares the receiver's
+// lazily-built matcher state rather than triggering a second build: copying the
+// Regexp copies the *machine pointer, so a timeout variant and its origin resolve
+// to the same program once either is matched.
+func TestWithTimeoutSharesMachine(t *testing.T) {
+	re := mustCompile(t, `[a-z]+`)
+	timed := re.WithTimeout(time.Minute)
+	if re.m != timed.m {
+		t.Fatal("WithTimeout copy does not share the origin's machine")
+	}
+	timed.Match("abc") // builds through the copy
+	if re.m.prog == nil {
+		t.Fatal("build through the timeout copy did not populate the shared machine")
+	}
+}
+
 func mustCompile(t *testing.T, p string) *Regexp {
 	t.Helper()
 	re, err := Compile(p)
