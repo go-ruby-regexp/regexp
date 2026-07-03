@@ -176,9 +176,49 @@ machine is built changed). Re-measured match ns/op eager → lazy across all 18
 corpus cases: worst ratio 1.09× (within run-to-run noise; several cases came out
 faster). See `benchmarks/results.csv`.
 
+### Anchored class-run consumer — the `skip` fast path (2026-07-03)
+
+`StringScanner#skip` / `#match?` re-match a bare single-char class repeat (`\s+`,
+`\S+`, `\w+`, `[0-9]+`, `.+`) anchored at an advancing cursor. That was the last
+tokenizer op behind MRI + YJIT: the anchored `MatchAt` primitive drove the
+per-step NFA simulation, seeding, closing and interning a frontier for every byte
+of a run whose whole answer is just "how far does the class reach from `pos`".
+
+We now recognise exactly that program shape at DFA-build time — a capture-free,
+single anchored `OpLoop` over one byte-decidable atom (byte class, dot, or ASCII
+literal), with no leading anchor, lookaround, rune-aware member, or possessive
+wrapper — and consume the run in a tight loop over a **256-bit ASCII membership
+bitset**, one indexed bit test per byte, with no per-position NFA state. Greedy
+takes the maximal run (capped at `max`), lazy with nothing after takes the
+minimum, either fails below `min`. Under UTF-8 a byte `≥ 0x80` begins a multi-byte
+code point the byte bitset cannot decide, so the consumer bows out to the general
+engine — correct, byte-identical, and rare on ASCII tokenizer input.
+
+Library-level `skip` (alternating `\s+`/`\S+` over a 2 752-byte lexer body,
+best-of-25, Apple M4 Max, Ruby 4.0.5), ns/op:
+
+| runtime | before | **after** |
+|---|---|---|
+| **go-ruby-regexp (pure Go)** | 136 771 | **9 862** (13.9× faster) |
+| C Onigmo 6.2.0 | 34 567 | 34 567 |
+| MRI | 131 257 | 131 257 |
+| MRI + YJIT | 98 153 | 98 153 |
+
+`skip` moves from **1.4× behind YJIT to 9.95× ahead**, clearing MRI (13.3×) and
+even the C Onigmo hand-written inner loop (3.5×). `match?` (over `[A-Za-z0-9_]+`)
+rides the same path (0.75× → 0.05× MRI). A white-box differential test holds the
+fast path byte-identical to the general engine and to the backtracking VM at every
+position across the class-run patterns × inputs (empty, all-match, no-match,
+bounded caps, greedy/lazy, unicode fallback, binary encoding); 100% coverage.
+
 ## Summary
 
 ### Where we meet or beat the C Onigmo
+- **Anchored class-run `skip`/`match?`** (`\s+`/`\S+`/`\w+`/`[…]+` at the cursor):
+  **3.5×/3.2× faster than C Onigmo** — a 256-bit ASCII class-bitset consumer walks
+  the run one bit test per byte with no per-position NFA state, doing per byte what
+  Onigmo's inner loop cannot beat without the same specialisation (see *Anchored
+  class-run consumer* above).
 - **Literal scans** (`needle` miss/hit): **1.71–1.75× faster than C Onigmo** and
   on par with RE2. Our literal-prefix prefilter rejects/locates with one
   `strings.Index` (runtime Boyer–Moore-ish) pass instead of stepping
