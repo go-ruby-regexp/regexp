@@ -82,7 +82,13 @@ func forceDFA(prog *compile.Program) *DFA {
 	pf := analyze(prog)
 	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc)}
 	n := len(nfa.insts)
-	d.pool.New = func() any { return newDFAThreads(n) }
+	d.pool.New = func() any {
+		r := &dfaRun{}
+		r.th = *newDFAThreads(n)
+		r.cs.bufA = make([]int32, n)
+		r.cs.bufB = make([]int32, n)
+		return r
+	}
 	return d
 }
 

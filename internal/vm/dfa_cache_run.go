@@ -297,8 +297,8 @@ func (s *dfaCacheSim) searchCached(anchored bool) (begin, end int, found, useSim
 	// seed mirrors dfaSim.search's prefilter-driven start locator.
 	seed := func(at int) int {
 		if anchored {
-			if at == 0 {
-				return 0
+			if at <= sim.startAt {
+				return sim.startAt
 			}
 			return -1
 		}

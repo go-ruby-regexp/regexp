@@ -5,9 +5,9 @@ package vm
 import (
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/go-ruby-regexp/regexp/internal/ast"
 	"github.com/go-ruby-regexp/regexp/internal/charset"
 	"github.com/go-ruby-regexp/regexp/internal/compile"
 )
@@ -318,17 +318,57 @@ func MatchAt(prog *compile.Program, input string, pos, budget int) ([]int, bool,
 // MatchTimeoutAt is MatchAt with a wall-clock deadline, mirroring the
 // MatchTimeout / Match relationship.
 func MatchTimeoutAt(prog *compile.Program, input string, pos, budget int, deadline time.Time) ([]int, bool, error) {
-	m := &machine{
-		prog:     prog,
-		input:    input,
-		budget:   budget,
-		deadline: deadline,
-		memoize:  !prog.HasBackref && !prog.HasCall,
-	}
-	m.memo.init(len(prog.Insts), len(input), prog.HasSplit)
+	m := acquireMachine(prog, input, budget, deadline)
+	defer releaseMachine(m)
 	m.gpos = pos
-	m.caps = make([]int, prog.NumSlots())
 	return m.run(pos)
+}
+
+// machinePool recycles backtracking-VM machines across calls so a scanning loop
+// (repeated Match / MatchAt over an advancing cursor, or gsub finding every
+// match) does not allocate a fresh machine, capture array, memo backing and
+// backtrack stacks on every call. sync.Pool keeps it race-safe: each goroutine
+// borrows its own machine, so a shared compiled Regexp matched concurrently never
+// shares mutable VM state. The returned capture slice is always a fresh copy (see
+// OpMatch), so a released machine's internal caps can be reused without aliasing a
+// caller's result.
+var machinePool = sync.Pool{New: func() any { return &machine{} }}
+
+// acquireMachine returns a machine ready to run prog over input, reusing pooled
+// backing (memo, caps, stacks) where its capacity allows. run() resets the
+// per-attempt stacks itself, so only the fields read before the first run (memo,
+// caps, gpos, clock) are reset here.
+func acquireMachine(prog *compile.Program, input string, budget int, deadline time.Time) *machine {
+	m := machinePool.Get().(*machine)
+	m.prog = prog
+	m.input = input
+	m.budget = budget
+	m.deadline = deadline
+	m.clockTick = 0
+	m.gpos = 0
+	// The persistent (pc, sp) memo is sound only when the future is a pure function
+	// of (pc, sp). A backreference reads captured text and a subexpression call
+	// (\g<…>) carries its own recursion state, so either disables memoization; the
+	// step budget then bounds the work.
+	m.memoize = !prog.HasBackref && !prog.HasCall
+	m.memo.init(len(prog.Insts), len(input), prog.HasSplit)
+	// Size caps to the program's slot count, reusing the pooled backing when it is
+	// large enough. run() fills it with -1 before matching, so no clearing here.
+	if ns := prog.NumSlots(); cap(m.caps) >= ns {
+		m.caps = m.caps[:ns]
+	} else {
+		m.caps = make([]int, ns)
+	}
+	return m
+}
+
+// releaseMachine returns m to the pool after dropping its references to the
+// caller's input and program (so a pooled-but-idle machine pins neither).
+func releaseMachine(m *machine) {
+	m.prog = nil
+	m.input = ""
+	m.deadline = time.Time{}
+	machinePool.Put(m)
 }
 
 // MatchTimeout is Match with an additional wall-clock deadline (Ruby's
@@ -338,19 +378,8 @@ func MatchTimeoutAt(prog *compile.Program, input string, pos, budget int, deadli
 // A zero deadline means no time limit, identical to Match, and incurs no
 // per-step clock cost.
 func MatchTimeout(prog *compile.Program, input string, budget int, deadline time.Time) ([]int, bool, error) {
-	m := &machine{
-		prog:     prog,
-		input:    input,
-		budget:   budget,
-		deadline: deadline,
-		// The persistent (pc, sp) memo is sound only when the future is a pure
-		// function of (pc, sp). A backreference reads captured text, and a
-		// subexpression call (\g<…>) re-runs/re-captures a group and carries its own
-		// recursion state, so either makes two arrivals at the same (pc, sp) differ;
-		// memoization is then disabled and the step budget bounds the work.
-		memoize: !prog.HasBackref && !prog.HasCall,
-	}
-	m.memo.init(len(prog.Insts), len(input), prog.HasSplit)
+	m := acquireMachine(prog, input, budget, deadline)
+	defer releaseMachine(m)
 	// \G anchors to where the overall search began. For a single Match call that
 	// is position 0; iterative scanning (gsub/scan) advances it on each step,
 	// which later phases will thread through here.
@@ -391,7 +420,7 @@ func MatchTimeout(prog *compile.Program, input string, budget int, deadline time
 		}
 		lastViableStart = strings.LastIndex(input, pf.required)
 	}
-	m.caps = make([]int, prog.NumSlots())
+	// caps was sized by acquireMachine; run() fills it per start position.
 	for start := 0; start <= len(input); start++ {
 		if lastViableStart >= 0 && start > lastViableStart {
 			// Past the last position from which a match could still contain the
@@ -1238,20 +1267,7 @@ func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 // rune-aware class: its code-point members cannot match a single byte, so only
 // the byte ranges (then negation) decide.
 func classMatchByteRanges(in compile.Inst, b byte) bool {
-	return rangesContain(in.Ranges, b) != in.Negate
-}
-
-// rangesContainRune reports whether code point r falls in any of the inclusive
-// byte ranges, whose bounds (from byte syntax) are ASCII and so are interpreted
-// as code points. A multi-byte code point therefore matches only a range whose
-// upper bound it does not exceed — never an ASCII-only range.
-func rangesContainRune(ranges []ast.ClassRange, r rune) bool {
-	for _, rg := range ranges {
-		if r >= rune(rg.Lo) && r <= rune(rg.Hi) {
-			return true
-		}
-	}
-	return false
+	return in.ClassHasByte(b) != in.Negate
 }
 
 // propStep reports whether the OpUniProp instruction in matches the code point
@@ -1271,7 +1287,7 @@ func isContinuationByte(b byte) bool { return b&0xc0 == 0x80 }
 // instruction (one that is neither folded nor carrying a \p{…} member). The
 // class's Negate flag is applied after range membership.
 func classMatch(in compile.Inst, b byte) bool {
-	return rangesContain(in.Ranges, b) != in.Negate
+	return in.ClassHasByte(b) != in.Negate
 }
 
 // classMatchRune reports whether code point r is accepted by a rune-aware
@@ -1341,16 +1357,6 @@ func bytesEqual(a, b string, fold bool) bool {
 		}
 	}
 	return true
-}
-
-// rangesContain reports whether byte b falls in any of the inclusive ranges.
-func rangesContain(ranges []ast.ClassRange, b byte) bool {
-	for _, r := range ranges {
-		if b >= r.Lo && b <= r.Hi {
-			return true
-		}
-	}
-	return false
 }
 
 // swapASCIICase returns b with its ASCII letter case flipped (A-Z <-> a-z); any

@@ -240,13 +240,25 @@ func TestLazyBuildConcurrent(t *testing.T) {
 		for i := 0; i < g; i++ {
 			go func(i int) {
 				<-start // release all goroutines at once to maximise build contention
-				switch i % 4 {
+				switch i % 6 {
 				case 0:
 					done <- re.Match("aaa7") != nil
 				case 1:
 					done <- re.MatchString("aaa7")
 				case 2:
 					done <- re.MatchAt("aaa7", 0) != nil
+				case 3:
+					// pooled DFA/VM anchored bounds path, shared across goroutines:
+					// must agree with MatchAt's group-0 span for this pattern.
+					b, e, ok := re.MatchBoundsAt("aaa7", 0)
+					md := re.MatchAt("aaa7", 0)
+					done <- (md == nil && !ok) || (md != nil && ok && b == md.Begin(0) && e == md.End(0))
+				case 4:
+					// pooled DFA/VM forward bounds path, shared across goroutines:
+					// must agree with Match's group-0 span for this pattern.
+					b, e, ok := re.MatchBounds("aaa7")
+					md := re.Match("aaa7")
+					done <- (md == nil && !ok) || (md != nil && ok && b == md.Begin(0) && e == md.End(0))
 				default:
 					done <- re.Encoding() == UTF8
 				}
