@@ -159,6 +159,12 @@ type dfaSim struct {
 	// strings.Index speed while the NFA inner loop accelerates the matching region.
 	pf    prefilter
 	usePF bool
+	// startAt is the single seed offset for an anchored-at-position search (the
+	// cursor MatchAt pins to): search(true) plants its one start thread here and
+	// never re-seeds, so the match must begin exactly at startAt. It is 0 for a
+	// plain \A-anchored search (whose only start is offset 0) and for every
+	// unanchored search, where it is ignored.
+	startAt int
 }
 
 // atomStep applies the VM's exact per-atom acceptance test for a consuming atom at
@@ -224,8 +230,11 @@ func (d *dfaSim) search(anchored bool) (int, int, bool) {
 	// `at` unchanged (every position is a candidate).
 	seed := func(at int) int {
 		if anchored {
-			if at == 0 {
-				return 0
+			// Anchored: the one and only start is d.startAt (0 for a \A program, the
+			// cursor offset for MatchAt). Seed it once, on the first request at or
+			// before it, and never re-seed forward.
+			if at <= d.startAt {
+				return d.startAt
 			}
 			return -1
 		}
@@ -421,7 +430,7 @@ func classStepCtx(c dfaCtx, in compile.Inst, sp int) (bool, int) {
 			return false, 0
 		}
 		r, w := utf8.DecodeRuneInString(c.input[sp:])
-		if rangesContainRune(in.Ranges, r) != in.Negate {
+		if in.ClassHasRune(r) != in.Negate {
 			return true, w
 		}
 		return false, 0

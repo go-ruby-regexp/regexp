@@ -346,7 +346,21 @@ type DFA struct {
 	pf       prefilter // start-locating prefilter, shared with the backtracking VM
 	usePF    bool      // pf can actually skip positions
 	cache    *dfaCache // memoized lazy-DFA transition table (the inner-loop accelerator)
-	pool     sync.Pool
+	pool     sync.Pool // of *dfaRun: the reusable per-search scratch (see dfaRun)
+}
+
+// dfaRun bundles all of one search's reusable scratch — the priority thread
+// lists, the per-step simulation, and the cached-driver state with its ping-pong
+// begin buffers — into a single pooled object. A search grabs one from the pool,
+// re-points it at this call's input, runs, and returns it, so a steady-state
+// Search / MatchAt loop (a StringScanner tokenizer re-matching from an advancing
+// cursor) allocates nothing per call beyond the returned span. All heap backing
+// (thread slices, visited set, the two int32 buffers, the fallback scratch) is
+// built once by pool.New and reused; only the value fields are reset per call.
+type dfaRun struct {
+	th  dfaThreads
+	sim dfaSim
+	cs  dfaCacheSim
 }
 
 // BuildDFA expands prog into a DFA, returning nil when the program is outside the
@@ -380,7 +394,13 @@ func BuildDFA(prog *compile.Program) *DFA {
 	}
 	d := &DFA{nfa: nfa, anchored: leadingAnchored(prog), pf: pf, usePF: pf.usable(), cache: newDFACache(nfa, prog.Enc)}
 	n := len(nfa.insts)
-	d.pool.New = func() any { return newDFAThreads(n) }
+	d.pool.New = func() any {
+		r := &dfaRun{}
+		r.th = *newDFAThreads(n)
+		r.cs.bufA = make([]int32, n)
+		r.cs.bufB = make([]int32, n)
+		return r
+	}
 	return d
 }
 
@@ -404,14 +424,12 @@ func leadingAnchored(prog *compile.Program) bool {
 // scan origin for \G (0 for a plain whole-string match). Results are identical to
 // the backtracking VM's whole-match span for every program the DFA accepts.
 func (d *DFA) Search(input string, enc compile.Encoding, gpos int) (int, int, bool) {
-	th := d.pool.Get().(*dfaThreads)
-	sim := &dfaSim{
-		nfa:   d.nfa,
-		th:    th,
-		ctx:   dfaCtx{input: input, enc: enc, gpos: gpos},
-		pf:    d.pf,
-		usePF: d.usePF,
-	}
+	r := d.pool.Get().(*dfaRun)
+	// Re-point the pooled scratch at this call. Only the value fields are reset; the
+	// slice backings (thread lists, buffers, fallback scratch) are retained.
+	r.sim = dfaSim{nfa: d.nfa, th: &r.th, ctx: dfaCtx{input: input, enc: enc, gpos: gpos}, pf: d.pf, usePF: d.usePF}
+	r.cs.c = d.cache
+	r.cs.sim = &r.sim
 	// The cached-DFA driver accelerates the width-1 ASCII inner loop, borrowing this
 	// sim (its thread pool, atom tests, and prefilter) for the multi-byte and
 	// assertion-crossing positions it cannot key. It produces the identical leftmost
@@ -422,15 +440,35 @@ func (d *DFA) Search(input string, enc compile.Encoding, gpos int) (int, int, bo
 	// the simulation (which handles every position uniformly, no interning, no
 	// per-position allocation). The gate is a pure performance choice — both engines
 	// produce the identical leftmost-first span.
-	n := len(d.nfa.insts)
-	cs := &dfaCacheSim{c: d.cache, sim: sim, bufA: make([]int32, n), bufB: make([]int32, n)}
-	b, e, ok, useSim := cs.searchCached(d.anchored)
+	b, e, ok, useSim := r.cs.searchCached(d.anchored)
 	if useSim {
 		// The cached scan bailed early on a multi-byte-dominated prefix; rerun on the
 		// per-step simulation. The borrowed sim's thread list is reset at the top of
 		// search(), so resuming on it from a fresh start is safe.
-		b, e, ok = sim.search(d.anchored)
+		b, e, ok = r.sim.search(d.anchored)
 	}
-	d.pool.Put(th)
+	d.pool.Put(r)
+	return b, e, ok
+}
+
+// MatchAt runs the NFA anchored at pos: the whole match must BEGIN exactly at pos
+// (so begin==pos on success), with the entire input visible so the text/line
+// anchors (\A ^) and lookbehind see the real prefix input[:pos] and \G binds to
+// pos. It plants a single start thread at pos and never scans forward, which is
+// the cursor-anchored primitive a StringScanner-style tokenizer needs (Scan /
+// Skip / match? re-matching from an advancing position). It returns the
+// [begin,end) span and whether a match occurred.
+//
+// It runs on the per-step simulation directly rather than the cached driver: the
+// cached transition table amortises its per-position state-interning cost over a
+// long forward scan, but a single anchored attempt visits too few positions to
+// repay it, so the plain simulation (sharing the same pooled thread lists) is
+// both simpler and faster here. The span is identical to what the backtracking VM
+// anchored at pos would report for every program the DFA accepts.
+func (d *DFA) MatchAt(input string, enc compile.Encoding, pos int) (int, int, bool) {
+	r := d.pool.Get().(*dfaRun)
+	r.sim = dfaSim{nfa: d.nfa, th: &r.th, ctx: dfaCtx{input: input, enc: enc, gpos: pos}, pf: d.pf, usePF: d.usePF, startAt: pos}
+	b, e, ok := r.sim.search(true)
+	d.pool.Put(r)
 	return b, e, ok
 }

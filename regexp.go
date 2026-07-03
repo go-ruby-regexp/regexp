@@ -169,7 +169,7 @@ func (re *Regexp) Match(s string) *MatchData {
 		if !ok {
 			return nil
 		}
-		return &MatchData{input: s, caps: []int{b, e}, ngroups: 0, names: m.prog.Names}
+		return spanMatch(s, b, e, m.prog.Names)
 	}
 	caps, ok, err := vm.MatchTimeout(m.prog, s, vm.DefaultBudget, re.deadline())
 	if err != nil || !ok {
@@ -194,11 +194,77 @@ func (re *Regexp) MatchAt(s string, pos int) *MatchData {
 	}
 	m := re.m
 	m.build()
+	// Capture-free subset: the lazy NFA's anchored-at-pos span IS the whole answer
+	// (there are no submatches to extract), so skip the backtracking VM entirely and
+	// take the linear-time path with pooled, allocation-free per-call state. This is
+	// the hot path for a tokenizing scan loop (Scan/Skip/match? re-matching from an
+	// advancing cursor over capture-free class/quantifier patterns), which otherwise
+	// paid a fresh backtracking machine + capture array + memo on every call.
+	if m.dfa != nil && m.prog.NumCapture == 0 {
+		b, e, ok := m.dfa.MatchAt(s, m.prog.Enc, pos)
+		if !ok {
+			return nil
+		}
+		return spanMatch(s, b, e, m.prog.Names)
+	}
 	caps, ok, err := vm.MatchAt(m.prog, s, pos, vm.DefaultBudget)
 	if err != nil || !ok {
 		return nil
 	}
 	return &MatchData{input: s, caps: caps, ngroups: m.prog.NumCapture, names: m.prog.Names}
+}
+
+// MatchBoundsAt is the allocation-free, bounds-only form of MatchAt: it reports
+// the whole match's [begin, end) byte span for a match anchored exactly at pos
+// (begin == pos on success), without building a MatchData or extracting
+// submatches. It is the primitive for the cursor-anchored StringScanner ops that
+// need only a length or a yes/no — skip(/…/), match?(/…/), an anchored scan whose
+// captured text the caller ignores — mirroring Ruby's StringScanner#skip /
+// #match?, which likewise return an integer rather than a MatchData. When the
+// program is in the lazy-NFA subset (no backreference, call, lookaround, atomic
+// group, or over-large bounded loop) the span is found by the linear-time NFA on
+// pooled state, so a tokenizing loop over such a pattern allocates nothing per
+// call; otherwise it falls to the backtracking VM. The span is identical to
+// MatchAt(s, pos).Begin(0)/End(0). pos out of range yields ok == false.
+func (re *Regexp) MatchBoundsAt(s string, pos int) (begin, end int, ok bool) {
+	if pos < 0 || pos > len(s) {
+		return 0, 0, false
+	}
+	m := re.m
+	m.build()
+	// The DFA reports the whole-match bounds for every program it accepts, including
+	// one with capturing groups (whether a match exists and where it spans never
+	// depends on which text the groups captured), so the bounds-only path uses it
+	// whenever it was built — not just for the capture-free case.
+	if m.dfa != nil {
+		return m.dfa.MatchAt(s, m.prog.Enc, pos)
+	}
+	caps, ok, err := vm.MatchAt(m.prog, s, pos, vm.DefaultBudget)
+	if err != nil || !ok {
+		return 0, 0, false
+	}
+	return caps[0], caps[1], true
+}
+
+// MatchBounds is the allocation-free, bounds-only form of Match: it scans s left
+// to right for the leftmost match and returns its whole-match [begin, end) byte
+// span, without building a MatchData or extracting submatches. It is the
+// primitive for a forward StringScanner scan_until / skip_until whose captured
+// text the caller ignores. On the lazy-NFA subset the search is the linear-time
+// NFA on pooled state (no per-call allocation); otherwise it falls to the
+// backtracking VM (bounded by the step budget). The span is identical to
+// Match(s).Begin(0)/End(0).
+func (re *Regexp) MatchBounds(s string) (begin, end int, ok bool) {
+	m := re.m
+	m.build()
+	if m.dfa != nil {
+		return m.dfa.Search(s, m.prog.Enc, 0)
+	}
+	caps, ok, err := vm.MatchTimeout(m.prog, s, vm.DefaultBudget, re.deadline())
+	if err != nil || !ok {
+		return 0, 0, false
+	}
+	return caps[0], caps[1], true
 }
 
 // MatchString reports whether s contains a match of the regular expression. When
@@ -221,10 +287,28 @@ func (re *Regexp) MatchString(s string) bool {
 // MatchData holds the result of a successful match: the byte spans of the whole
 // match (group 0) and of each capturing group.
 type MatchData struct {
-	input   string
-	caps    []int
+	input string
+	caps  []int
+	// grp0 backs caps for the capture-free fast paths (Match / MatchAt / the DFA
+	// is-match cases), so the whole-match span rides in the MatchData's own single
+	// heap allocation instead of a separate []int{b,e}. spanMatch points caps at
+	// grp0[:]; the backtracking VM path leaves grp0 zero and caps referencing the
+	// VM's own slice. Accessors read caps uniformly either way, so results are
+	// identical.
+	grp0    [2]int
 	ngroups int
 	names   map[string]int
+}
+
+// spanMatch builds a MatchData for a capture-free result (group 0 only). It keeps
+// the [begin,end) span inside the struct's own grp0 array and slices caps over it,
+// so a successful match allocates just the one MatchData — no second []int — which
+// matters on the tokenizing hot loop that produces one match per token.
+func spanMatch(s string, b, e int, names map[string]int) *MatchData {
+	md := &MatchData{input: s, ngroups: 0, names: names}
+	md.grp0[0], md.grp0[1] = b, e
+	md.caps = md.grp0[:]
+	return md
 }
 
 // NGroups returns the number of capturing groups, not counting group 0 (the

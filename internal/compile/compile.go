@@ -158,6 +158,58 @@ type Inst struct {
 	Max        int                  // OpLook (lookbehind width upper bound), OpLoop (max count, -1 unbounded)
 	Sub        Op                   // OpLoop: the opcode of the single atom the loop repeats
 	Greedy     bool                 // OpLoop: greedy (longest-first) vs lazy (shortest-first)
+	// ByteSet is a 256-bit membership bitset over the byte-oriented Ranges of an
+	// OpClass (bit b set iff byte b is in some range), precomputed at compile time
+	// so the hot match loop tests class membership with a single indexed bit read
+	// instead of a linear scan over Ranges. It is set on every OpClass (nil on all
+	// other ops) and covers exactly Ranges; the rune-aware members (RuneRanges,
+	// Props, folding) are unaffected and still decided by the range/property walk,
+	// so results are identical — the bitset only accelerates the ASCII/byte portion.
+	ByteSet *[4]uint64
+}
+
+// buildByteSet precomputes the 256-bit membership bitset for an OpClass's
+// byte-oriented ranges: bit b is set iff byte b lies in some inclusive range. The
+// hot match loop then tests membership with one indexed bit read instead of a
+// linear scan. It is always built for an OpClass (even an empty byte-range class,
+// whose bitset is all-zero and whose members are then decided entirely by the
+// rune-aware walk), so callers can rely on the pointer being non-nil for OpClass.
+func buildByteSet(ranges []ast.ClassRange) *[4]uint64 {
+	var s [4]uint64
+	for _, r := range ranges {
+		for b := int(r.Lo); b <= int(r.Hi); b++ {
+			s[b>>6] |= 1 << (uint(b) & 63)
+		}
+	}
+	return &s
+}
+
+// ClassHasByte reports whether byte b is in the class's byte ranges, using the
+// precomputed ByteSet when present (the common OpClass case) and falling back to a
+// linear range scan otherwise. It does NOT apply Negate — callers apply that — so
+// it is a drop-in for a raw range-membership test.
+func (in *Inst) ClassHasByte(b byte) bool {
+	if in.ByteSet != nil {
+		return in.ByteSet[b>>6]&(1<<(uint(b)&63)) != 0
+	}
+	for _, r := range in.Ranges {
+		if b >= r.Lo && b <= r.Hi {
+			return true
+		}
+	}
+	return false
+}
+
+// ClassHasRune reports whether code point r is in the class's byte ranges. Those
+// ranges are byte-valued (0–255), so a code point above 255 is never a member; a
+// code point in range is decided by the same 256-bit ByteSet. It backs the UTF8
+// non-rune-aware class test, where a multi-byte code point can only match through
+// the byte ranges (RuneRanges/Props being empty). Negate is applied by the caller.
+func (in *Inst) ClassHasRune(r rune) bool {
+	if r < 0 || r > 255 {
+		return false
+	}
+	return in.ClassHasByte(byte(r))
 }
 
 // Program is a compiled regular expression: the instruction list, the number of
@@ -276,7 +328,7 @@ func (b *builder) node(n ast.Node) {
 	case *ast.AnyChar:
 		b.emit(Inst{Op: OpAny, DotAll: t.DotAll})
 	case *ast.Class:
-		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, RuneRanges: t.RuneRanges, Props: t.Props, Negate: t.Negate, Fold: t.Fold})
+		b.emit(Inst{Op: OpClass, Ranges: t.Ranges, RuneRanges: t.RuneRanges, Props: t.Props, Negate: t.Negate, Fold: t.Fold, ByteSet: buildByteSet(t.Ranges)})
 	case *ast.UnicodeProp:
 		b.emit(Inst{Op: OpUniProp, Prop: ast.PropRef{Name: t.Name, Negate: t.Negate}})
 	case *ast.Anchor:

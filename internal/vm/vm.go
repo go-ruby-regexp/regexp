@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-ruby-regexp/regexp/internal/ast"
 	"github.com/go-ruby-regexp/regexp/internal/charset"
 	"github.com/go-ruby-regexp/regexp/internal/compile"
 )
@@ -1238,20 +1237,7 @@ func (m *machine) classStep(in compile.Inst, sp int) (ok bool, width int) {
 // rune-aware class: its code-point members cannot match a single byte, so only
 // the byte ranges (then negation) decide.
 func classMatchByteRanges(in compile.Inst, b byte) bool {
-	return rangesContain(in.Ranges, b) != in.Negate
-}
-
-// rangesContainRune reports whether code point r falls in any of the inclusive
-// byte ranges, whose bounds (from byte syntax) are ASCII and so are interpreted
-// as code points. A multi-byte code point therefore matches only a range whose
-// upper bound it does not exceed — never an ASCII-only range.
-func rangesContainRune(ranges []ast.ClassRange, r rune) bool {
-	for _, rg := range ranges {
-		if r >= rune(rg.Lo) && r <= rune(rg.Hi) {
-			return true
-		}
-	}
-	return false
+	return in.ClassHasByte(b) != in.Negate
 }
 
 // propStep reports whether the OpUniProp instruction in matches the code point
@@ -1271,7 +1257,7 @@ func isContinuationByte(b byte) bool { return b&0xc0 == 0x80 }
 // instruction (one that is neither folded nor carrying a \p{…} member). The
 // class's Negate flag is applied after range membership.
 func classMatch(in compile.Inst, b byte) bool {
-	return rangesContain(in.Ranges, b) != in.Negate
+	return in.ClassHasByte(b) != in.Negate
 }
 
 // classMatchRune reports whether code point r is accepted by a rune-aware
@@ -1341,16 +1327,6 @@ func bytesEqual(a, b string, fold bool) bool {
 		}
 	}
 	return true
-}
-
-// rangesContain reports whether byte b falls in any of the inclusive ranges.
-func rangesContain(ranges []ast.ClassRange, b byte) bool {
-	for _, r := range ranges {
-		if b >= r.Lo && b <= r.Hi {
-			return true
-		}
-	}
-	return false
 }
 
 // swapASCIICase returns b with its ASCII letter case flipped (A-Z <-> a-z); any
