@@ -46,6 +46,25 @@ const (
 	ASCII8BIT = engine.ASCII8BIT
 )
 
+// ErrTimeout and ErrBudget are the two reasons a match can be abandoned rather
+// than decided: ErrTimeout when the wall-clock limit set by WithTimeout elapsed,
+// ErrBudget when the engine's deterministic backtrack-step budget was exhausted.
+// They are reported only by the …Err match methods (MatchErr, MatchAtErr,
+// MatchStringErr, MatchBoundsErr, MatchBoundsAtErr); every other match method
+// folds them into "no match".
+//
+// A caller using a Regexp as a validator, a denylist or any other guard MUST use
+// an …Err method and treat a non-nil error as a refusal. Folded into no-match, an
+// abandoned search on a crafted subject reads as "the guard did not fire", which
+// is fail-open — this is what Ruby's Regexp::TimeoutError exists to prevent.
+// Note that ErrBudget needs no timeout to be configured: it is reached on a
+// catastrophically backtracking pattern under the engine's default budget.
+// Compare with errors.Is.
+var (
+	ErrTimeout = engine.ErrTimeout
+	ErrBudget  = engine.ErrBudget
+)
+
 // Compile parses a pattern and returns a compiled Regexp in the default UTF-8
 // encoding, or an error if the pattern is malformed. As with Ruby's Regexp.new,
 // a syntax error is reported here at compile time, not deferred to the first
@@ -89,8 +108,9 @@ func (re *Regexp) String() string { return re.re.String() }
 func (re *Regexp) Timeout() time.Duration { return re.re.Timeout() }
 
 // WithTimeout returns a copy of the Regexp that aborts any single match taking
-// longer than d of wall-clock time (Ruby's Regexp.timeout equivalent), returning
-// no match. A non-positive d clears the limit. The copy shares the compiled
+// longer than d of wall-clock time (Ruby's Regexp.timeout equivalent), reporting
+// ErrTimeout from the …Err match methods and no match from every other one. A
+// non-positive d clears the limit. The copy shares the compiled
 // program with the receiver, which is left unchanged, so a Regexp can be shared
 // across goroutines and given per-use timeouts without data races.
 func (re *Regexp) WithTimeout(d time.Duration) *Regexp {
@@ -101,13 +121,26 @@ func (re *Regexp) WithTimeout(d time.Duration) *Regexp {
 // there is no match. The search scans start positions left to right and, at the
 // first position that matches, returns the greedy leftmost-first match (Ruby /
 // Onigmo semantics). If the Regexp carries a timeout (see WithTimeout) and the
-// search exceeds it, or the internal step budget is exhausted, Match returns nil.
+// search exceeds it, or the internal step budget is exhausted, Match returns nil
+// — indistinguishable from a genuine non-match. Use MatchErr to tell them apart.
 func (re *Regexp) Match(s string) *MatchData {
-	caps := re.re.FindStringSubmatchIndex(s)
-	if caps == nil {
-		return nil
+	md, _ := re.MatchErr(s)
+	return md
+}
+
+// MatchErr is Match that reports why there is no match: err is ErrTimeout or
+// ErrBudget when the search was abandoned with the answer still unknown, and nil
+// when a nil *MatchData means a real non-match. It is the form a validator,
+// denylist or any other guard must use — see ErrTimeout.
+func (re *Regexp) MatchErr(s string) (*MatchData, error) {
+	caps, err := re.re.FindStringSubmatchIndexErr(s)
+	if err != nil {
+		return nil, err
 	}
-	return re.matchData(s, caps)
+	if caps == nil {
+		return nil, nil
+	}
+	return re.matchData(s, caps), nil
 }
 
 // MatchAt attempts a match anchored exactly at byte offset pos in s, with \G
@@ -115,13 +148,25 @@ func (re *Regexp) Match(s string) *MatchData {
 // whole string s stays visible to the matcher, so the line/text anchors (^, \A)
 // and lookbehind see the real prefix s[:pos] — exactly the semantics a
 // StringScanner-style tokenizer needs. Group offsets in the returned MatchData
-// are absolute into s. pos out of range yields nil.
+// are absolute into s. pos out of range yields nil, as does a search abandoned at
+// a limit (see ErrTimeout); use MatchAtErr to tell those apart.
 func (re *Regexp) MatchAt(s string, pos int) *MatchData {
-	caps := re.re.FindStringSubmatchIndexAt(s, pos)
-	if caps == nil {
-		return nil
+	md, _ := re.MatchAtErr(s, pos)
+	return md
+}
+
+// MatchAtErr is MatchAt that reports why there is no match: err is ErrTimeout or
+// ErrBudget when the search was abandoned with the answer still unknown, and nil
+// otherwise. See ErrTimeout for why a guard must use this form.
+func (re *Regexp) MatchAtErr(s string, pos int) (*MatchData, error) {
+	caps, err := re.re.FindStringSubmatchIndexAtErr(s, pos)
+	if err != nil {
+		return nil, err
 	}
-	return re.matchData(s, caps)
+	if caps == nil {
+		return nil, nil
+	}
+	return re.matchData(s, caps), nil
 }
 
 // MatchBoundsAt is the allocation-free, bounds-only form of MatchAt: it reports
@@ -129,22 +174,51 @@ func (re *Regexp) MatchAt(s string, pos int) *MatchData {
 // (begin == pos on success), without building a MatchData or extracting
 // submatches. It is the primitive for the cursor-anchored StringScanner ops that
 // need only a length or a yes/no — skip(/…/), match?(/…/). The span is identical
-// to MatchAt(s, pos).Begin(0)/End(0). pos out of range yields ok == false.
+// to MatchAt(s, pos).Begin(0)/End(0). pos out of range yields ok == false, as
+// does a search abandoned at a limit (see ErrTimeout); use MatchBoundsAtErr to
+// tell them apart.
 func (re *Regexp) MatchBoundsAt(s string, pos int) (begin, end int, ok bool) {
 	return re.re.MatchBoundsAt(s, pos)
+}
+
+// MatchBoundsAtErr is MatchBoundsAt that reports why there is no match: err is
+// ErrTimeout or ErrBudget when the search was abandoned with the answer still
+// unknown, and nil otherwise. See ErrTimeout for why a guard must use this form.
+func (re *Regexp) MatchBoundsAtErr(s string, pos int) (begin, end int, ok bool, err error) {
+	return re.re.MatchBoundsAtErr(s, pos)
 }
 
 // MatchBounds is the allocation-free, bounds-only form of Match: it scans s left
 // to right for the leftmost match and returns its whole-match [begin, end) byte
 // span, without building a MatchData or extracting submatches. The span is
-// identical to Match(s).Begin(0)/End(0).
+// identical to Match(s).Begin(0)/End(0). A search abandoned at a limit (see
+// ErrTimeout) yields ok == false; use MatchBoundsErr to tell them apart.
 func (re *Regexp) MatchBounds(s string) (begin, end int, ok bool) {
 	return re.re.MatchBounds(s)
 }
 
-// MatchString reports whether s contains a match of the regular expression.
+// MatchBoundsErr is MatchBounds that reports why there is no match: err is
+// ErrTimeout or ErrBudget when the search was abandoned with the answer still
+// unknown, and nil otherwise. See ErrTimeout for why a guard must use this form.
+func (re *Regexp) MatchBoundsErr(s string) (begin, end int, ok bool, err error) {
+	return re.re.MatchBoundsErr(s)
+}
+
+// MatchString reports whether s contains a match of the regular expression. A
+// search abandoned at a limit (see ErrTimeout) reports false, indistinguishable
+// from a genuine non-match — which for a denylist means the subject is let
+// through. Use MatchStringErr to tell them apart.
 func (re *Regexp) MatchString(s string) bool {
 	return re.re.MatchString(s)
+}
+
+// MatchStringErr is MatchString that reports why the answer is false: err is
+// ErrTimeout or ErrBudget when the search was abandoned with the answer still
+// unknown, and nil when false means a real non-match. It is the form a validator,
+// denylist or any other guard must use — see ErrTimeout.
+func (re *Regexp) MatchStringErr(s string) (bool, error) {
+	_, _, ok, err := re.re.MatchBoundsErr(s)
+	return ok, err
 }
 
 // matchData builds a MatchData from an engine capture slice: caps holds the
