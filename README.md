@@ -75,6 +75,19 @@ It is the regexp backend for
 > polls the clock only once every 4096 steps, so a search with no deadline pays
 > nothing.
 >
+> **A reached limit is REPORTED, not folded into "no match".** `MatchErr`,
+> `MatchAtErr`, `MatchStringErr`, `MatchBoundsErr` and `MatchBoundsAtErr` are the
+> `…Err` twins of the five match methods, and they return `ErrTimeout` or
+> `ErrBudget` when the search was abandoned with the answer still unknown. **If
+> you are using a `Regexp` as a guard — a validator, a denylist, an allowlist —
+> use an `…Err` method and treat a non-nil error as a refusal.** The plain five
+> answer `nil`/`false` for both reasons, so an abandoned search on a crafted
+> subject is indistinguishable from a subject that simply does not match, and the
+> guard reads as "did not fire". That is fail-open, and it is what Ruby's
+> `Regexp::TimeoutError` exists to prevent. `ErrBudget` needs no timeout to be
+> configured: `(a+)+\1b` against `"a"*26` is abandoned under the engine's default
+> budget in ~0.83 s.
+>
 > **Benchmarks & transparent allocation reuse (Phase 4)** are in: a representative
 > suite (`bench_test.go`) covers literal-prefix and alternation scanning, anchored
 > matching, backtracking-heavy nested quantifiers under the ReDoS memo,

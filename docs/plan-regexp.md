@@ -430,7 +430,12 @@ block forms) lives in that downstream adapter (Phase 5), not in this engine.
   **Wall-clock timeout** ✅ *done* — a real-time deadline (Ruby's
   `Regexp.timeout` / per-pattern `timeout:` equivalent) backs up the
   deterministic step budget: a match still running past the deadline aborts and
-  reports no match. The public surface is `re.WithTimeout(d)`, which returns a
+  reports `ErrTimeout` from the `…Err` match methods (`MatchErr`, `MatchAtErr`,
+  `MatchStringErr`, `MatchBoundsErr`, `MatchBoundsAtErr`) and no match from the
+  plain five — folding it into "no match" unconditionally was a fail-open for any
+  Regexp used as a guard, and is what go-embedded-ruby/ruby#776 fixed above this
+  layer by raising `Regexp::TimeoutError`. The public surface is
+  `re.WithTimeout(d)`, which returns a
   *copy* carrying the limit (sharing the compiled program) so a Regexp stays
   immutable and concurrency-safe, and `re.Timeout()`. Internally the VM polls the
   monotonic clock only once every 4096 steps (a power-of-two mask makes the gate
