@@ -63,6 +63,11 @@ const (
 var (
 	ErrTimeout = engine.ErrTimeout
 	ErrBudget  = engine.ErrBudget
+	// ErrStackLimit is what WithStackLimit asks for: the backtrack state of the
+	// match outgrew the limit (Onigmo's ONIGERR_MATCH_STACK_LIMIT_OVER). It wraps
+	// ErrBudget, so errors.Is(err, ErrBudget) is also true, and like the others it
+	// is reported only by the …Err methods.
+	ErrStackLimit = engine.ErrStackLimit
 )
 
 // Compile parses a pattern and returns a compiled Regexp in the default UTF-8
@@ -115,6 +120,20 @@ func (re *Regexp) Timeout() time.Duration { return re.re.Timeout() }
 // across goroutines and given per-use timeouts without data races.
 func (re *Regexp) WithTimeout(d time.Duration) *Regexp {
 	return &Regexp{re: re.re.WithTimeout(d), names: re.names}
+}
+
+// WithStackLimit returns a copy of the Regexp that abandons any single match
+// whose backtrack state (the alternatives left open plus the capture undo-log)
+// would exceed n bytes, reporting ErrStackLimit from the …Err match methods and
+// no match from every other one. It is opt-in: the default, and n <= 0, is
+// unlimited, as in Onigmo (onig_set_match_stack_limit_size: "size = 0:
+// unlimited"). Without a limit a loop around a capture group costs about 420
+// bytes of backtrack state per input byte, which a caller lexing untrusted input
+// may not want to pay. The copy has its own compiled program, built on first
+// use; the receiver is left unchanged. Use an …Err method to tell a refusal from
+// a failed match — see ErrTimeout.
+func (re *Regexp) WithStackLimit(n int) *Regexp {
+	return &Regexp{re: re.re.WithStackLimit(n), names: re.names}
 }
 
 // Match searches s for the leftmost match and returns a *MatchData, or nil if

@@ -88,6 +88,18 @@ It is the regexp backend for
 > configured: `(a+)+\1b` against `"a"*26` is abandoned under the engine's default
 > budget in ~0.83 s.
 >
+> **An opt-in memory bound** is in: `re.WithStackLimit(n)` returns a copy that
+> abandons any single match whose backtrack state (the alternatives left open plus
+> the capture undo-log) would exceed `n` bytes, reporting `ErrStackLimit` from the
+> `…Err` methods. It wraps `ErrBudget`, so `errors.Is(err, ErrBudget)` is also
+> true, and like the others it is never folded into "no match" by an `…Err`
+> method. The default, and `n <= 0`, is **unlimited**, as in Onigmo
+> (`onig_set_match_stack_limit_size`: "size = 0: unlimited"; its error is
+> `ONIGERR_MATCH_STACK_LIMIT_OVER`). Without a limit a loop around a capture group
+> costs about 420 bytes of backtrack state per input byte (`'(\\.|.)*?'` over
+> 1 MiB: ~475 MB); with a 16 MiB limit it is refused. The memo table is not
+> counted.
+>
 > **Benchmarks & transparent allocation reuse (Phase 4)** are in: a representative
 > suite (`bench_test.go`) covers literal-prefix and alternation scanning, anchored
 > matching, backtracking-heavy nested quantifiers under the ReDoS memo,
